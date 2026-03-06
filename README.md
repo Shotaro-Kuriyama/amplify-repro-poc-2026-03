@@ -3,6 +3,16 @@
 Next.js フロントエンドと FastAPI バックエンドを使って、PDF投入から疑似IFC生成までの導線を段階的に実装しています。  
 現時点では PDF 解析や本家MLはまだ載せず、`/api/jobs` の疑似進捗とダミーIFC生成でフローを通しています。
 
+## 引き継ぎドキュメント
+
+初見の開発者/エージェント向けの現状整理は以下を参照してください。
+
+- [PROJECT_STATUS.md](./PROJECT_STATUS.md)
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [TASK_NEXT.md](./TASK_NEXT.md)
+- [HANDOFF_TO_CLAUDE.md](./HANDOFF_TO_CLAUDE.md)
+- [AGENTS.md](./AGENTS.md)
+
 ## 技術構成
 
 - Next.js App Router
