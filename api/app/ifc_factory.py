@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import ifcopenshell
+import ifcopenshell.api.aggregate as aggregate
+import ifcopenshell.api.context as context
+import ifcopenshell.api.geometry as geometry
+import ifcopenshell.api.project as project
+import ifcopenshell.api.root as root
+import ifcopenshell.api.spatial as spatial
+import ifcopenshell.api.unit as unit
+
+
+def _setup_model(project_name: str):
+    model = project.create_file(version="IFC4")
+
+    ifc_project = root.create_entity(model, ifc_class="IfcProject", name=project_name)
+    site = root.create_entity(model, ifc_class="IfcSite", name="Default Site")
+    building = root.create_entity(model, ifc_class="IfcBuilding", name="Default Building")
+
+    unit.assign_unit(
+        model,
+        length={"is_metric": True, "raw": "METERS"},
+        area={"is_metric": True, "raw": "METERS"},
+        volume={"is_metric": True, "raw": "METERS"},
+    )
+
+    model_context = context.add_context(model, context_type="Model")
+    body_context = context.add_context(
+        model,
+        context_type="Model",
+        context_identifier="Body",
+        target_view="MODEL_VIEW",
+        parent=model_context,
+    )
+
+    aggregate.assign_object(model, products=[site], relating_object=ifc_project)
+    aggregate.assign_object(model, products=[building], relating_object=site)
+
+    geometry.edit_object_placement(model, product=site, matrix=np.eye(4))
+    geometry.edit_object_placement(model, product=building, matrix=np.eye(4))
+
+    return model, building, body_context
+
+
+def create_ifc_from_annotations(
+    destination: Path,
+    *,
+    project_name: str,
+    annotations: dict[str, Any],
+    default_storey_height_m: float = 3.0,
+) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    model, building, body_context = _setup_model(project_name)
+    plans = sorted(annotations.get("plans", []), key=lambda plan: plan.get("storey_index", 0))
+
+    for plan in plans:
+        storey_index = int(plan.get("storey_index", 0))
+        storey_name = str(plan.get("plan_name") or f"Storey {storey_index + 1}")
+        storey = root.create_entity(model, ifc_class="IfcBuildingStorey", name=storey_name)
+        aggregate.assign_object(model, products=[storey], relating_object=building)
+        geometry.edit_object_placement(model, product=storey, matrix=np.eye(4))
+
+        px_to_m = float(plan.get("px_to_m") or 0.0)
+        wall_height_m = float(plan.get("wall_height_m") or 2.4)
+        wall_thickness_m = float(plan.get("wall_thickness_m") or 0.12)
+        storey_elevation_m = float(storey_index) * default_storey_height_m
+
+        if px_to_m <= 0:
+            continue
+
+        for segment_index, segment in enumerate(plan.get("segments", []), start=1):
+            x1_m = float(segment["x1_px"]) * px_to_m
+            y1_m = float(segment["y1_px"]) * px_to_m
+            x2_m = float(segment["x2_px"]) * px_to_m
+            y2_m = float(segment["y2_px"]) * px_to_m
+
+            if abs(x1_m - x2_m) < 1e-6 and abs(y1_m - y2_m) < 1e-6:
+                continue
+
+            wall = root.create_entity(
+                model,
+                ifc_class="IfcWall",
+                name=f"{storey_name} Wall {segment_index}",
+            )
+            spatial.assign_container(model, products=[wall], relating_structure=storey)
+            wall_representation = geometry.create_2pt_wall(
+                model,
+                element=wall,
+                context=body_context,
+                p1=(x1_m, y1_m),
+                p2=(x2_m, y2_m),
+                elevation=storey_elevation_m,
+                height=wall_height_m,
+                thickness=wall_thickness_m,
+                is_si=True,
+            )
+            geometry.assign_representation(model, product=wall, representation=wall_representation)
+
+    model.write(str(destination))
+    return destination
+
+
+def create_wall_ifc(
+    destination: Path,
+    *,
+    project_name: str,
+    wall_name: str = "Sample Wall",
+    wall_length_m: float = 4.0,
+    wall_height_m: float = 3.0,
+    wall_thickness_m: float = 0.2,
+) -> Path:
+    return create_ifc_from_annotations(
+        destination,
+        project_name=project_name,
+        annotations={
+            "plans": [
+                {
+                    "plan_id": "sample-plan",
+                    "plan_name": "Ground Floor",
+                    "storey_index": 0,
+                    "px_to_m": 1.0,
+                    "wall_height_m": wall_height_m,
+                    "wall_thickness_m": wall_thickness_m,
+                    "segments": [
+                        {
+                            "id": "sample-wall",
+                            "x1_px": 0.0,
+                            "y1_px": 0.0,
+                            "x2_px": wall_length_m,
+                            "y2_px": 0.0,
+                        }
+                    ],
+                }
+            ]
+        },
+    )

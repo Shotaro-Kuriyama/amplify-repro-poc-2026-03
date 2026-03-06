@@ -1,0 +1,21 @@
+{
+  "plans": [
+    {
+      "plan_id": "167fa653-01a7-48d9-b713-5ac8d68ea6bf",
+      "plan_name": "sample_house_floorplan_2D_clean_A4_landscape_scale_1_50.pdf",
+      "storey_index": 0,
+      "px_to_m": null,
+      "wall_height_m": 3.0,
+      "wall_thickness_m": 0.3,
+      "segments": [
+        {
+          "id": "f1c26d8d-24af-48bf-828a-bb34b9e77bd4",
+          "x1_px": 59.001037208611734,
+          "y1_px": 102.0017092369478,
+          "x2_px": 52.00091414996288,
+          "y2_px": 531.0088980864635
+        }
+      ]
+    }
+  ]
+}

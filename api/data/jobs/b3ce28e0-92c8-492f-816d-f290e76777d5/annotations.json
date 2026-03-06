@@ -1,0 +1,30 @@
+{
+  "plans": [
+    {
+      "plan_id": "3d10ffa7-fe42-4c24-86fb-0edbe7e82c23",
+      "plan_name": "sample_house_floorplan_2D_clean_A4_landscape_scale_1_50.pdf",
+      "storey_index": 0,
+      "px_to_m": 0.22749811180008356,
+      "wall_height_m": 2.4,
+      "wall_thickness_m": 0.12,
+      "segments": [
+        {
+          "id": "79888669-7a4d-4580-b7f3-910a86ae1b4d",
+          "x1_px": 62.36770513822255,
+          "y1_px": 98.00035601286174,
+          "x2_px": 61.36769683837381,
+          "y2_px": 541.0019653363082
+        }
+      ]
+    },
+    {
+      "plan_id": "615184c6-b3fb-49b1-b879-146deac9101f",
+      "plan_name": "sample_house_floorplan_2D_clean_A4_landscape_scale_1_50.pdf",
+      "storey_index": 1,
+      "px_to_m": null,
+      "wall_height_m": 2.4,
+      "wall_thickness_m": 0.12,
+      "segments": []
+    }
+  ]
+}

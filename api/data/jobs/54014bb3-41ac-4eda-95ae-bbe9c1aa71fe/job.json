@@ -1,0 +1,22 @@
+{
+  "id": "54014bb3-41ac-4eda-95ae-bbe9c1aa71fe",
+  "start_level": "ground",
+  "plans": [
+    {
+      "id": "b7c3b1c2-d5b6-430b-a0b6-bc0a00c71a48",
+      "name": "sample_house_floorplan_2D_clean_A4_landscape_scale_1_50.pdf",
+      "storey_index": 0,
+      "pdf_filename": "b7c3b1c2-d5b6-430b-a0b6-bc0a00c71a48.pdf",
+      "size_label": "3 KB"
+    },
+    {
+      "id": "6b05e17e-efd0-469d-83fc-9e07f70f76e7",
+      "name": "ダイアパレス平面図.pdf",
+      "storey_index": 1,
+      "pdf_filename": "6b05e17e-efd0-469d-83fc-9e07f70f76e7.pdf",
+      "size_label": "66 KB"
+    }
+  ],
+  "created_at": 1772693076.117811,
+  "started_at": 1772693076.134465
+}

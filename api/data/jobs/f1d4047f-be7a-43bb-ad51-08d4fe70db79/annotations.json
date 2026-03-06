@@ -1,0 +1,13 @@
+{
+  "plans": [
+    {
+      "plan_id": "f3985542-9975-44d1-b760-1af8dbd35766",
+      "plan_name": "ダイアパレス平面図.pdf",
+      "storey_index": 0,
+      "px_to_m": null,
+      "wall_height_m": 2.4,
+      "wall_thickness_m": 0.12,
+      "segments": []
+    }
+  ]
+}

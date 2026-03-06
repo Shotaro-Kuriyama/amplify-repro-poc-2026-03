@@ -1,0 +1,15 @@
+{
+  "id": "4b13a7bd-032f-41b9-b7cf-5f8bf2cc3238",
+  "start_level": "ground",
+  "plans": [
+    {
+      "id": "9b5a5734-65a1-4bab-830b-8869647b9d90",
+      "name": "sample_house_floorplan_2D_clean_A4_landscape_scale_1_50.pdf",
+      "storey_index": 0,
+      "pdf_filename": "9b5a5734-65a1-4bab-830b-8869647b9d90.pdf",
+      "size_label": "3 KB"
+    }
+  ],
+  "created_at": 1772701305.64719,
+  "started_at": 1772701305.6680598
+}

@@ -1,0 +1,35 @@
+{
+  "name": "amplify-rebuild-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "copy-ifc-wasm": "node scripts/copy-ifc-wasm.mjs",
+    "dev": "next dev --hostname 127.0.0.1",
+    "build": "next build",
+    "postinstall": "npm run copy-ifc-wasm",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@types/three": "^0.183.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "next": "^15.2.0",
+    "pdfjs-dist": "^5.5.207",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-pdf": "^10.4.1",
+    "tailwind-merge": "^3.3.0",
+    "tailwindcss-animate": "^1.0.7",
+    "three": "^0.149.0",
+    "web-ifc-viewer": "^1.0.218"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.2"
+  }
+}

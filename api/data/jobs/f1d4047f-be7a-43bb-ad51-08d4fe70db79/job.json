@@ -1,0 +1,15 @@
+{
+  "id": "f1d4047f-be7a-43bb-ad51-08d4fe70db79",
+  "start_level": "ground",
+  "plans": [
+    {
+      "id": "f3985542-9975-44d1-b760-1af8dbd35766",
+      "name": "ダイアパレス平面図.pdf",
+      "storey_index": 0,
+      "pdf_filename": "f3985542-9975-44d1-b760-1af8dbd35766.pdf",
+      "size_label": "66 KB"
+    }
+  ],
+  "created_at": 1772689846.4078422,
+  "started_at": 1772689846.44878
+}

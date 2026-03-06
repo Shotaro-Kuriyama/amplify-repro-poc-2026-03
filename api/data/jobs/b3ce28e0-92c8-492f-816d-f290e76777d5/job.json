@@ -1,0 +1,22 @@
+{
+  "id": "b3ce28e0-92c8-492f-816d-f290e76777d5",
+  "start_level": "ground",
+  "plans": [
+    {
+      "id": "3d10ffa7-fe42-4c24-86fb-0edbe7e82c23",
+      "name": "sample_house_floorplan_2D_clean_A4_landscape_scale_1_50.pdf",
+      "storey_index": 0,
+      "pdf_filename": "3d10ffa7-fe42-4c24-86fb-0edbe7e82c23.pdf",
+      "size_label": "3 KB"
+    },
+    {
+      "id": "615184c6-b3fb-49b1-b879-146deac9101f",
+      "name": "sample_house_floorplan_2D_clean_A4_landscape_scale_1_50.pdf",
+      "storey_index": 1,
+      "pdf_filename": "615184c6-b3fb-49b1-b879-146deac9101f.pdf",
+      "size_label": "3 KB"
+    }
+  ],
+  "created_at": 1772679563.955279,
+  "started_at": 1772679563.9897048
+}

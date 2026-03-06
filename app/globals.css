@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 35 60% 98%;
+    --foreground: 220 33% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 33% 12%;
+    --primary: 197 78% 44%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 35 80% 94%;
+    --secondary-foreground: 220 33% 18%;
+    --muted: 210 20% 94%;
+    --muted-foreground: 220 16% 38%;
+    --accent: 28 89% 61%;
+    --accent-foreground: 220 40% 14%;
+    --border: 220 18% 88%;
+    --input: 220 18% 88%;
+    --ring: 197 78% 44%;
+    --radius: 1.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground antialiased;
+    background-image:
+      radial-gradient(circle at top left, rgba(14, 165, 233, 0.18), transparent 35%),
+      radial-gradient(circle at top right, rgba(251, 146, 60, 0.18), transparent 30%),
+      linear-gradient(180deg, #fffdf8 0%, #f6f7fb 100%);
+    font-family: "Avenir Next", "Segoe UI", "Hiragino Sans", sans-serif;
+  }
+}
+
+@layer utilities {
+  .surface-grid {
+    background-image: theme("backgroundImage.grid");
+    background-size: 28px 28px;
+  }
+}

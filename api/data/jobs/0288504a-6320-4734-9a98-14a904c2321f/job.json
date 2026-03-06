@@ -1,0 +1,15 @@
+{
+  "id": "0288504a-6320-4734-9a98-14a904c2321f",
+  "start_level": "ground",
+  "plans": [
+    {
+      "id": "plan-a",
+      "name": "plan-a.pdf",
+      "storey_index": 0,
+      "pdf_filename": "plan-a.pdf",
+      "size_label": "1 KB"
+    }
+  ],
+  "created_at": 1772615339.849547,
+  "started_at": 1772615339.8502579
+}
