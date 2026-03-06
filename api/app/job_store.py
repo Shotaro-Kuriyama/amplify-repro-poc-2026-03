@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+SAFE_PLAN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -74,15 +78,35 @@ def decode_pdf_data_url(data_url: str) -> bytes:
         raise ValueError("PDFデータの形式が不正です。")
 
     _, encoded = data_url.split(",", 1)
-    return base64.b64decode(encoded)
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("PDFデータの形式が不正です。") from exc
+
+
+def is_safe_plan_id(plan_id: str) -> bool:
+    return bool(SAFE_PLAN_ID_PATTERN.fullmatch(plan_id))
 
 
 def write_plan_pdf(root_dir: Path, job_id: str, plan_id: str, pdf_data_url: str) -> tuple[str, str]:
+    if not is_safe_plan_id(plan_id):
+        raise ValueError("plan_id は英数字・アンダースコア・ハイフンのみ、64文字以内で指定してください。")
+
     plan_bytes = decode_pdf_data_url(pdf_data_url)
     target_dir = plans_dir(root_dir, job_id)
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{plan_id}.pdf"
-    (target_dir / filename).write_bytes(plan_bytes)
+    target = target_dir / filename
+    resolved_root = target_dir.resolve()
+    resolved_target = target.resolve(strict=False)
+
+    if not resolved_target.is_relative_to(resolved_root):
+        raise ValueError("PDF 保存先が不正です。")
+
+    if target.exists():
+        raise FileExistsError("同じ plan_id の PDF が既に存在します。")
+
+    target.write_bytes(plan_bytes)
     return filename, format_file_size(len(plan_bytes))
 
 

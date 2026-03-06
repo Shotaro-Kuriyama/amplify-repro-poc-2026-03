@@ -23,6 +23,25 @@ export type JobSnapshot = {
   start_level: StartLevel;
 };
 
+export type AutoDetectSegment = {
+  x1_px: number;
+  y1_px: number;
+  x2_px: number;
+  y2_px: number;
+};
+
+export type AutoDetectResult = {
+  segments: AutoDetectSegment[];
+  meta: {
+    method: string;
+    image_size: {
+      width: number;
+      height: number;
+    };
+    filtered_count: number;
+  };
+};
+
 type CreateJobPayload = {
   plans: {
     plan_id: string;
@@ -96,4 +115,18 @@ export function saveJobAnnotations(jobId: string, payload: JobAnnotations) {
     method: "PUT",
     body: JSON.stringify(payload),
   });
+}
+
+export function autodetectPlanSegments(
+  jobId: string,
+  planId: string,
+  payload: { page: number; mode: "raster" } = { page: 1, mode: "raster" },
+) {
+  return request<AutoDetectResult>(
+    `/api/jobs/${encodeURIComponent(jobId)}/plans/${encodeURIComponent(planId)}/autodetect`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }

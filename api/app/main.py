@@ -11,11 +11,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .autodetect import AutoDetectError, detect_wall_segments_from_pdf
 from .ifc_factory import create_ifc_from_annotations, create_wall_ifc
 from .job_store import (
     JobRecord,
     PlanRecord,
     default_annotations,
+    is_safe_plan_id,
     load_annotations,
     load_job,
     save_annotations,
@@ -85,6 +87,34 @@ class JobSnapshotResponse(BaseModel):
     start_level: Literal["ground", "basement", "upper"]
 
 
+class AutoDetectRequest(BaseModel):
+    page: int = Field(default=1, ge=1)
+    mode: str = Field(default="raster", min_length=1)
+
+
+class AutoDetectSegmentResponse(BaseModel):
+    x1_px: float
+    y1_px: float
+    x2_px: float
+    y2_px: float
+
+
+class AutoDetectMetaImageSizeResponse(BaseModel):
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
+
+
+class AutoDetectMetaResponse(BaseModel):
+    method: str
+    image_size: AutoDetectMetaImageSizeResponse
+    filtered_count: int = Field(ge=0)
+
+
+class AutoDetectResponse(BaseModel):
+    segments: list[AutoDetectSegmentResponse]
+    meta: AutoDetectMetaResponse
+
+
 app = FastAPI(title="AmpliFy Stub API")
 app.add_middleware(
     CORSMiddleware,
@@ -112,6 +142,13 @@ def get_job_record(job_id: str) -> JobRecord:
             raise HTTPException(status_code=404, detail="ジョブが見つかりません。")
         jobs[job.id] = job
     return job
+
+
+def get_plan_record(job: JobRecord, plan_id: str) -> PlanRecord:
+    for plan in job.plans:
+        if plan.id == plan_id:
+            return plan
+    raise HTTPException(status_code=404, detail="plan が見つかりません。")
 
 
 def plan_snapshots(job: JobRecord, request: Request) -> list[PlanSnapshotResponse]:
@@ -143,6 +180,7 @@ def build_wall_ifc(job: JobRecord) -> Path:
             artifact_path,
             project_name=f"Job {job.id}",
             annotations=annotations,
+            start_level=job.start_level,
         )
     else:
         wall_name = job.plans[0].name if job.plans else "Sample Wall"
@@ -194,6 +232,27 @@ def create_snapshot(job: JobRecord, request: Request) -> JobSnapshotResponse:
     )
 
 
+def validate_create_job_payload(payload: JobCreateRequest) -> None:
+    seen_plan_ids: set[str] = set()
+
+    for plan in payload.plans:
+        if not is_safe_plan_id(plan.plan_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "plan_id は英数字・アンダースコア・ハイフンのみ、"
+                    "64文字以内で指定してください。"
+                ),
+            )
+
+        if plan.plan_id in seen_plan_ids:
+            raise HTTPException(
+                status_code=409,
+                detail=f"plan_id が重複しています: {plan.plan_id}",
+            )
+        seen_plan_ids.add(plan.plan_id)
+
+
 def normalize_annotations_payload(job: JobRecord, payload: AnnotationsPayload) -> dict[str, list[dict[str, object]]]:
     template = default_annotations(job)
     known_by_id = {plan["plan_id"]: plan for plan in template["plans"]}
@@ -238,16 +297,26 @@ def sample_ifc() -> FileResponse:
 
 @app.post("/api/jobs", response_model=JobSnapshotResponse)
 def create_job(payload: JobCreateRequest, request: Request) -> JobSnapshotResponse:
+    validate_create_job_payload(payload)
     job_id = str(uuid4())
     plans: list[PlanRecord] = []
 
     for plan in sorted(payload.plans, key=lambda item: item.storey_index):
-        pdf_filename, size_label = write_plan_pdf(
-            JOB_DATA_DIR,
-            job_id,
-            plan.plan_id,
-            plan.pdf_data_base64,
-        )
+        try:
+            pdf_filename, size_label = write_plan_pdf(
+                JOB_DATA_DIR,
+                job_id,
+                plan.plan_id,
+                plan.pdf_data_base64,
+            )
+        except FileExistsError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"同じ plan_id の PDF が既に存在します: {plan.plan_id}",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         plans.append(
             PlanRecord(
                 id=plan.plan_id,
@@ -302,3 +371,52 @@ def put_job_annotations(job_id: str, payload: AnnotationsPayload) -> Annotations
     normalized = normalize_annotations_payload(job, payload)
     save_annotations(JOB_DATA_DIR, job.id, normalized)
     return AnnotationsPayload.model_validate(normalized)
+
+
+@app.post(
+    "/api/jobs/{job_id}/plans/{plan_id}/autodetect",
+    response_model=AutoDetectResponse,
+)
+def autodetect_plan_segments(
+    job_id: str,
+    plan_id: str,
+    payload: AutoDetectRequest,
+) -> AutoDetectResponse:
+    if payload.mode != "raster":
+        raise HTTPException(
+            status_code=400,
+            detail="mode は raster のみ対応しています。",
+        )
+    if payload.page != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Auto-detect (beta) は page=1 のみ対応しています。",
+        )
+
+    job = get_job_record(job_id)
+    plan = get_plan_record(job, plan_id)
+
+    plans_root = (JOB_DATA_DIR / job.id / "plans").resolve()
+    plan_path = (plans_root / plan.pdf_filename).resolve(strict=False)
+    if not plan_path.is_relative_to(plans_root):
+        raise HTTPException(status_code=400, detail="plan PDF パスが不正です。")
+    if not plan_path.exists():
+        raise HTTPException(status_code=404, detail="plan PDF が見つかりません。")
+
+    try:
+        segments, meta = detect_wall_segments_from_pdf(
+            plan_path,
+            mode=payload.mode,
+            page=payload.page,
+        )
+    except AutoDetectError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    return AutoDetectResponse(
+        segments=[AutoDetectSegmentResponse(**segment) for segment in segments],
+        meta=AutoDetectMetaResponse(
+            method=str(meta["method"]),
+            image_size=AutoDetectMetaImageSizeResponse(**meta["image_size"]),
+            filtered_count=int(meta["filtered_count"]),
+        ),
+    )

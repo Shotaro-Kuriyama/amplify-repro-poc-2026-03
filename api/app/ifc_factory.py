@@ -52,11 +52,19 @@ def create_ifc_from_annotations(
     project_name: str,
     annotations: dict[str, Any],
     default_storey_height_m: float = 3.0,
+    start_level: str | None = None,
 ) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     model, building, body_context = _setup_model(project_name)
     plans = sorted(annotations.get("plans", []), key=lambda plan: plan.get("storey_index", 0))
+    # `start_level` defines elevation offset for the first uploaded plan:
+    # ground=0F, basement=-1F, upper=+1F. Unknown values fallback to ground.
+    start_level_offset = {
+        "ground": 0,
+        "basement": -1,
+        "upper": 1,
+    }.get(start_level or "ground", 0)
 
     for plan in plans:
         storey_index = int(plan.get("storey_index", 0))
@@ -68,7 +76,7 @@ def create_ifc_from_annotations(
         px_to_m = float(plan.get("px_to_m") or 0.0)
         wall_height_m = float(plan.get("wall_height_m") or 2.4)
         wall_thickness_m = float(plan.get("wall_thickness_m") or 0.12)
-        storey_elevation_m = float(storey_index) * default_storey_height_m
+        storey_elevation_m = float(storey_index + start_level_offset) * default_storey_height_m
 
         if px_to_m <= 0:
             continue

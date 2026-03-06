@@ -9,6 +9,7 @@ type JobViewerPanelProps = {
   canStart: boolean;
   isStarting: boolean;
   jobId: string | null;
+  needsRebuild: boolean;
   planCount: number;
   progress: number;
   startLevelLabel: string;
@@ -84,6 +85,7 @@ export function JobViewerPanel({
   canStart,
   isStarting,
   jobId,
+  needsRebuild,
   planCount,
   progress,
   startLevelLabel,
@@ -93,7 +95,21 @@ export function JobViewerPanel({
 }: JobViewerPanelProps) {
   const copy = copyByStatus[status];
   const progressWidth = `${Math.max(progress, status === "completed" ? 100 : 4)}%`;
-  const viewerStatusLabel = status === "completed" && viewerUrl ? "生成済みIFCを表示中" : "生成完了後に IFC を表示します";
+  const canTriggerBuild = canStart && !isStarting && status !== "queued" && status !== "processing";
+  const isCompleted = status === "completed" && Boolean(artifactUrl);
+  const viewerStatusLabel =
+    status === "completed" && viewerUrl
+      ? needsRebuild
+        ? "注釈更新あり: Rebuild で IFC を最新化してください"
+        : "生成済みIFCを表示中"
+      : "生成完了後に IFC を表示します";
+  const buildButtonLabel = isStarting
+    ? isCompleted
+      ? "再生成中..."
+      : "ジョブ作成中..."
+    : isCompleted
+      ? "Rebuild"
+      : "Start";
 
   return (
     <div className="relative flex min-h-[720px] flex-col">
@@ -172,17 +188,25 @@ export function JobViewerPanel({
               <div className="mt-4 rounded-2xl border border-sky-400/30 bg-sky-400/10 px-4 py-4 text-sm text-sky-100">
                 {copy.cta}
               </div>
+              {needsRebuild ? (
+                <div className="mt-4 rounded-2xl border border-amber-300/50 bg-amber-300/10 px-4 py-4 text-sm text-amber-100">
+                  注釈が更新され、IFC の再生成が必要です。Rebuild を実行すると成果物を更新します。
+                </div>
+              ) : null}
 
-              {status === "completed" && artifactUrl ? null : (
-                <Button
-                  className="mt-4 w-full bg-white text-slate-950 hover:bg-slate-100"
-                  disabled={!canStart || isStarting}
-                  type="button"
-                  onClick={onStart}
-                >
-                  {isStarting ? "ジョブ作成中..." : "Start"}
-                </Button>
-              )}
+              <Button
+                className={cn(
+                  "mt-4 w-full",
+                  needsRebuild
+                    ? "bg-amber-300 text-slate-950 hover:bg-amber-200"
+                    : "bg-white text-slate-950 hover:bg-slate-100",
+                )}
+                disabled={!canTriggerBuild}
+                type="button"
+                onClick={onStart}
+              >
+                {buildButtonLabel}
+              </Button>
             </div>
             {status === "completed" && artifactUrl ? (
               <DownloadAccessForm artifactUrl={artifactUrl} />

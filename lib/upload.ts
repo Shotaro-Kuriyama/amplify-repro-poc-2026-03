@@ -44,6 +44,14 @@ export function createUploadedPlan(file: File): UploadedPlan {
   };
 }
 
+export function revokeObjectUrlIfNeeded(url: string) {
+  if (!url.startsWith("blob:")) {
+    return;
+  }
+
+  URL.revokeObjectURL(url);
+}
+
 export function createRemotePlan(input: {
   id: string;
   name: string;

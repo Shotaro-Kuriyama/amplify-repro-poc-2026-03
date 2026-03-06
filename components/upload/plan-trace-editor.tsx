@@ -7,7 +7,14 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import type { JobAnnotations, PlanAnnotations, PlanSegment } from "@/lib/annotations";
+import type { AutoDetectResult } from "@/lib/api";
+import {
+  filterUniqueSegmentsForImport,
+  type JobAnnotations,
+  type PlanAnnotations,
+  type PlanSegment,
+  type SegmentInput,
+} from "@/lib/annotations";
 import type { UploadedPlan } from "@/lib/upload";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +23,11 @@ type EditorMode = "draw" | "select" | "calibrate";
 type Point = {
   x: number;
   y: number;
+};
+
+type GhostSegment = SegmentInput & {
+  accepted: boolean;
+  id: string;
 };
 
 type PlanTraceEditorProps = {
@@ -27,6 +39,7 @@ type PlanTraceEditorProps = {
   selectedPlanId: string | null;
   onChangeAnnotations: (planId: string, nextPlan: PlanAnnotations) => void;
   onSaveAnnotations: () => void;
+  onAutoDetectPlan: (planId: string) => Promise<AutoDetectResult>;
   onSelectedPlanIdChange: (planId: string) => void;
 };
 
@@ -39,6 +52,7 @@ export function PlanTraceEditor({
   selectedPlanId,
   onChangeAnnotations,
   onSaveAnnotations,
+  onAutoDetectPlan,
   onSelectedPlanIdChange,
 }: PlanTraceEditorProps) {
   const [mode, setMode] = useState<EditorMode>("draw");
@@ -49,6 +63,11 @@ export function PlanTraceEditor({
   const [calibrationMeters, setCalibrationMeters] = useState("3.64");
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [renderErrorMessage, setRenderErrorMessage] = useState<string | null>(null);
+  const [ghostSegmentsByPlanId, setGhostSegmentsByPlanId] = useState<Record<string, GhostSegment[]>>({});
+  const [ghostMetaByPlanId, setGhostMetaByPlanId] = useState<Record<string, AutoDetectResult["meta"]>>({});
+  const [autoDetectErrorMessage, setAutoDetectErrorMessage] = useState<string | null>(null);
+  const [autoDetectInfoMessage, setAutoDetectInfoMessage] = useState<string | null>(null);
+  const [isAutoDetecting, setIsAutoDetecting] = useState(false);
 
   const activePlan = useMemo(
     () => plans.find((plan) => plan.id === selectedPlanId) ?? plans[0] ?? null,
@@ -57,6 +76,18 @@ export function PlanTraceEditor({
   const activeAnnotations = useMemo(
     () => annotations.plans.find((plan) => plan.plan_id === activePlan?.id) ?? null,
     [activePlan?.id, annotations.plans],
+  );
+  const activeGhostSegments = useMemo(
+    () => (activePlan ? ghostSegmentsByPlanId[activePlan.id] ?? [] : []),
+    [activePlan, ghostSegmentsByPlanId],
+  );
+  const activeGhostMeta = useMemo(
+    () => (activePlan ? ghostMetaByPlanId[activePlan.id] ?? null : null),
+    [activePlan, ghostMetaByPlanId],
+  );
+  const acceptedGhostCount = useMemo(
+    () => activeGhostSegments.filter((segment) => segment.accepted).length,
+    [activeGhostSegments],
   );
 
   useEffect(() => {
@@ -74,6 +105,11 @@ export function PlanTraceEditor({
     setCalibrationPoints([]);
     setSelectedSegmentId(null);
   }, [activePlan?.id, mode]);
+
+  useEffect(() => {
+    setAutoDetectErrorMessage(null);
+    setAutoDetectInfoMessage(null);
+  }, [activePlan?.id]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -213,6 +249,153 @@ export function PlanTraceEditor({
     setCalibrationPoints([]);
   }
 
+  function updateActiveGhostSegments(updater: (current: GhostSegment[]) => GhostSegment[]) {
+    if (!activePlan) {
+      return;
+    }
+
+    setGhostSegmentsByPlanId((current) => ({
+      ...current,
+      [activePlan.id]: updater(current[activePlan.id] ?? []),
+    }));
+  }
+
+  async function handleAutoDetect() {
+    if (!activePlan) {
+      return;
+    }
+
+    setIsAutoDetecting(true);
+    setAutoDetectErrorMessage(null);
+    setAutoDetectInfoMessage(null);
+
+    try {
+      const result = await onAutoDetectPlan(activePlan.id);
+      const ghostSegments: GhostSegment[] = result.segments.map((segment) => ({
+        ...segment,
+        accepted: true,
+        id: crypto.randomUUID(),
+      }));
+
+      setGhostSegmentsByPlanId((current) => ({
+        ...current,
+        [activePlan.id]: ghostSegments,
+      }));
+      setGhostMetaByPlanId((current) => ({
+        ...current,
+        [activePlan.id]: result.meta,
+      }));
+      setAutoDetectInfoMessage(
+        `${ghostSegments.length} 本の候補を抽出しました。Select モードで個別に採用/破棄できます。`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Auto-detect の実行に失敗しました。";
+      setAutoDetectErrorMessage(message);
+    } finally {
+      setIsAutoDetecting(false);
+    }
+  }
+
+  function toggleGhostSegment(segmentId: string) {
+    if (mode !== "select") {
+      return;
+    }
+
+    updateActiveGhostSegments((current) =>
+      current.map((segment) =>
+        segment.id === segmentId
+          ? {
+              ...segment,
+              accepted: !segment.accepted,
+            }
+          : segment,
+      ),
+    );
+  }
+
+  function acceptAllGhostSegments() {
+    updateActiveGhostSegments((current) =>
+      current.map((segment) => ({
+        ...segment,
+        accepted: true,
+      })),
+    );
+  }
+
+  function rejectAllGhostSegments() {
+    updateActiveGhostSegments((current) =>
+      current.map((segment) => ({
+        ...segment,
+        accepted: false,
+      })),
+    );
+  }
+
+  function clearGhostSegments() {
+    if (!activePlan) {
+      return;
+    }
+
+    setGhostSegmentsByPlanId((current) => ({
+      ...current,
+      [activePlan.id]: [],
+    }));
+    setGhostMetaByPlanId((current) => {
+      const next = { ...current };
+      delete next[activePlan.id];
+      return next;
+    });
+    setAutoDetectInfoMessage("候補線をクリアしました。");
+  }
+
+  function importAcceptedGhostSegments() {
+    if (!activePlan || !activeAnnotations) {
+      return;
+    }
+
+    const acceptedCandidates = activeGhostSegments
+      .filter((segment) => segment.accepted)
+      .map<SegmentInput>(({ x1_px, y1_px, x2_px, y2_px }) => ({
+        x1_px,
+        y1_px,
+        x2_px,
+        y2_px,
+      }));
+
+    if (acceptedCandidates.length === 0) {
+      setAutoDetectInfoMessage("採用された候補線がありません。");
+      return;
+    }
+
+    const uniqueCandidates = filterUniqueSegmentsForImport(activeAnnotations.segments, acceptedCandidates);
+    if (uniqueCandidates.length === 0) {
+      setAutoDetectInfoMessage("重複または短すぎる候補線のため、取り込み対象がありませんでした。");
+      return;
+    }
+
+    const appendedSegments: PlanSegment[] = uniqueCandidates.map((segment) => ({
+      ...segment,
+      id: crypto.randomUUID(),
+    }));
+
+    onChangeAnnotations(activeAnnotations.plan_id, {
+      ...activeAnnotations,
+      segments: [...activeAnnotations.segments, ...appendedSegments],
+    });
+
+    const skippedCount = acceptedCandidates.length - uniqueCandidates.length;
+    setAutoDetectInfoMessage(
+      skippedCount > 0
+        ? `${appendedSegments.length} 本を追加し、${skippedCount} 本は重複/短線としてスキップしました。`
+        : `${appendedSegments.length} 本を annotations に追加しました。`,
+    );
+
+    setGhostSegmentsByPlanId((current) => ({
+      ...current,
+      [activePlan.id]: (current[activePlan.id] ?? []).filter((segment) => !segment.accepted),
+    }));
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -260,6 +443,9 @@ export function PlanTraceEditor({
                     <Badge variant="secondary">
                       segments: {activeAnnotations?.segments.length ?? 0}
                     </Badge>
+                    <Badge variant="secondary">
+                      ghost: {acceptedGhostCount}/{activeGhostSegments.length}
+                    </Badge>
                   </div>
                 </div>
 
@@ -286,6 +472,75 @@ export function PlanTraceEditor({
                     で削除。Calibrate:
                     2点指定後に実寸を入力します。
                   </p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-slate-800">Auto-detect (beta)</div>
+                      <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                        raster only / page 1 only。候補線は ghost 表示され、保存前に採用/破棄できます。
+                      </p>
+                    </div>
+                    <Button
+                      disabled={isAutoDetecting || !activePlan}
+                      type="button"
+                      variant="outline"
+                      onClick={handleAutoDetect}
+                    >
+                      {isAutoDetecting ? "抽出中..." : "Auto-detect (beta)"}
+                    </Button>
+                  </div>
+
+                  {autoDetectErrorMessage ? (
+                    <Alert className="mt-3 border-rose-300 bg-rose-50 text-rose-900">
+                      <AlertTitle>Auto-detect エラー</AlertTitle>
+                      <AlertDescription>{autoDetectErrorMessage}</AlertDescription>
+                    </Alert>
+                  ) : null}
+
+                  {autoDetectInfoMessage ? (
+                    <Alert className="mt-3 border-emerald-300 bg-emerald-50 text-emerald-900">
+                      <AlertTitle>Auto-detect 情報</AlertTitle>
+                      <AlertDescription>{autoDetectInfoMessage}</AlertDescription>
+                    </Alert>
+                  ) : null}
+
+                  {activeGhostMeta ? (
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
+                      <Badge variant="secondary">method: {activeGhostMeta.method}</Badge>
+                      <Badge variant="secondary">
+                        image: {activeGhostMeta.image_size.width} x {activeGhostMeta.image_size.height}
+                      </Badge>
+                      <Badge variant="secondary">
+                        filtered: {activeGhostMeta.filtered_count}
+                      </Badge>
+                    </div>
+                  ) : null}
+
+                  {activeGhostSegments.length > 0 ? (
+                    <div className="mt-3 space-y-3">
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Button type="button" variant="outline" onClick={acceptAllGhostSegments}>
+                          Accept all
+                        </Button>
+                        <Button type="button" variant="outline" onClick={rejectAllGhostSegments}>
+                          Reject all
+                        </Button>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Button type="button" onClick={importAcceptedGhostSegments}>
+                          採用線を取り込む
+                        </Button>
+                        <Button type="button" variant="ghost" onClick={clearGhostSegments}>
+                          候補をクリア
+                        </Button>
+                      </div>
+                      <p className="text-xs text-slate-600">
+                        Select モードで ghost 線をクリックすると採用/破棄を切り替えます。
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -459,6 +714,38 @@ export function PlanTraceEditor({
                               </g>
                             );
                           })}
+
+                          {activeGhostSegments.map((segment) => (
+                            <g key={`ghost-${segment.id}`}>
+                              <line
+                                stroke="transparent"
+                                strokeWidth={16}
+                                x1={segment.x1_px}
+                                x2={segment.x2_px}
+                                y1={segment.y1_px}
+                                y2={segment.y2_px}
+                                onClick={(event) => {
+                                  if (mode !== "select") {
+                                    return;
+                                  }
+
+                                  event.stopPropagation();
+                                  toggleGhostSegment(segment.id);
+                                }}
+                              />
+                              <line
+                                opacity={segment.accepted ? 0.9 : 0.45}
+                                stroke={segment.accepted ? "#22c55e" : "#f43f5e"}
+                                strokeDasharray={segment.accepted ? "12 8" : "6 10"}
+                                strokeLinecap="round"
+                                strokeWidth={segment.accepted ? 3 : 2}
+                                x1={segment.x1_px}
+                                x2={segment.x2_px}
+                                y1={segment.y1_px}
+                                y2={segment.y2_px}
+                              />
+                            </g>
+                          ))}
 
                           {draftPoints.length >= 1 ? (
                             <>

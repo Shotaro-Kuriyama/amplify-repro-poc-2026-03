@@ -1,18 +1,21 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { WorkspaceShell } from "@/components/layout/workspace-shell";
 import { JobViewerPanel } from "@/components/upload/job-viewer-panel";
 import { PlanTraceEditor } from "@/components/upload/plan-trace-editor";
 import { UploadPlanPanel } from "@/components/upload/upload-plan-panel";
 import {
+  autodetectPlanSegments,
+  ApiError,
   createJob,
   getJob,
   getJobAnnotations,
   saveJobAnnotations,
   startJob,
+  type AutoDetectResult,
   type JobSnapshot,
   type JobStatus,
 } from "@/lib/api";
@@ -27,6 +30,7 @@ import {
   fileToDataUrl,
   isPdfFile,
   reorderPlans,
+  revokeObjectUrlIfNeeded,
   startLevelOptions,
   type StartLevel,
   type UploadedPlan,
@@ -93,6 +97,35 @@ function plansFromSnapshot(snapshot: JobSnapshot): UploadedPlan[] {
     );
 }
 
+function remapPlanIds(
+  plans: UploadedPlan[],
+  annotations: JobAnnotations,
+  selectedPlanId: string | null,
+) {
+  const idMap = new Map<string, string>();
+  for (const plan of plans) {
+    idMap.set(plan.id, crypto.randomUUID());
+  }
+
+  const remappedPlans = plans.map((plan) => ({
+    ...plan,
+    id: idMap.get(plan.id) ?? plan.id,
+  }));
+  const remappedAnnotations: JobAnnotations = {
+    plans: annotations.plans.map((plan) => ({
+      ...plan,
+      plan_id: idMap.get(plan.plan_id) ?? plan.plan_id,
+    })),
+  };
+
+  return {
+    annotations: remappedAnnotations,
+    plans: remappedPlans,
+    selectedPlanId:
+      selectedPlanId && idMap.has(selectedPlanId) ? idMap.get(selectedPlanId)! : selectedPlanId,
+  };
+}
+
 export function UploadWorkspace() {
   const router = useRouter();
   const pathname = usePathname();
@@ -109,6 +142,8 @@ export function UploadWorkspace() {
   const [job, setJob] = useState<JobUiState>(initialJobState);
   const [isStarting, setIsStarting] = useState(false);
   const [isSavingAnnotations, setIsSavingAnnotations] = useState(false);
+  const [needsRebuild, setNeedsRebuild] = useState(false);
+  const previousPlansRef = useRef<UploadedPlan[]>([]);
 
   const startLevelLabel = useMemo(
     () => startLevelOptions.find((option) => option.value === startLevel)?.label ?? "未設定",
@@ -119,6 +154,27 @@ export function UploadWorkspace() {
   useEffect(() => {
     setAnnotations((current) => synchronizeAnnotations(plans, current));
   }, [plans]);
+
+  useEffect(() => {
+    const previousPlans = previousPlansRef.current;
+    const currentUrls = new Set(plans.map((plan) => plan.pdfUrl));
+
+    for (const previousPlan of previousPlans) {
+      if (!currentUrls.has(previousPlan.pdfUrl)) {
+        revokeObjectUrlIfNeeded(previousPlan.pdfUrl);
+      }
+    }
+
+    previousPlansRef.current = plans;
+  }, [plans]);
+
+  useEffect(() => {
+    return () => {
+      for (const plan of previousPlansRef.current) {
+        revokeObjectUrlIfNeeded(plan.pdfUrl);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!jobParam) {
@@ -144,6 +200,7 @@ export function UploadWorkspace() {
           progress: snapshot.progress,
           status: snapshot.status,
         });
+        setNeedsRebuild(false);
         setStartLevel(snapshot.start_level);
 
         const savedAnnotations = await getJobAnnotations(currentJobId);
@@ -227,6 +284,7 @@ export function UploadWorkspace() {
       progress: snapshot.progress,
       status: snapshot.status,
     });
+    setNeedsRebuild(false);
     setStartLevel(snapshot.start_level);
   }
 
@@ -239,29 +297,52 @@ export function UploadWorkspace() {
       throw new Error("ジョブを作成するには、少なくとも1つのPDFを追加してください。");
     }
 
-    const payloadPlans = await Promise.all(
-      plans.map(async (plan, index) => {
-        if (!plan.file) {
-          throw new Error("PDFファイルを再アップロードしてください。");
-        }
+    async function toPayloadPlans(sourcePlans: UploadedPlan[]) {
+      return Promise.all(
+        sourcePlans.map(async (plan, index) => {
+          if (!plan.file) {
+            throw new Error("PDFファイルを再アップロードしてください。");
+          }
 
-        return {
-          plan_id: plan.id,
-          name: plan.name,
-          storey_index: index,
-          pdf_data_base64: await fileToDataUrl(plan.file),
-        };
-      }),
-    );
+          return {
+            plan_id: plan.id,
+            name: plan.name,
+            storey_index: index,
+            pdf_data_base64: await fileToDataUrl(plan.file),
+          };
+        }),
+      );
+    }
 
-    const snapshot = await createJob({
-      plans: payloadPlans,
-      start_level: startLevel,
-    });
+    try {
+      const payloadPlans = await toPayloadPlans(plans);
+      const snapshot = await createJob({
+        plans: payloadPlans,
+        start_level: startLevel,
+      });
+      applySnapshot(snapshot);
+      router.replace(`${pathname}?job=${snapshot.id}`, { scroll: false });
+      return snapshot.id;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        const remapped = remapPlanIds(plans, annotations, selectedPlanId);
+        const synchronized = synchronizeAnnotations(remapped.plans, remapped.annotations);
+        setPlans(remapped.plans);
+        setAnnotations(synchronized);
+        setSelectedPlanId(remapped.selectedPlanId);
 
-    applySnapshot(snapshot);
-    router.replace(`${pathname}?job=${snapshot.id}`, { scroll: false });
-    return snapshot.id;
+        const retryPayloadPlans = await toPayloadPlans(remapped.plans);
+        const snapshot = await createJob({
+          plans: retryPayloadPlans,
+          start_level: startLevel,
+        });
+        applySnapshot(snapshot);
+        router.replace(`${pathname}?job=${snapshot.id}`, { scroll: false });
+        return snapshot.id;
+      }
+
+      throw error;
+    }
   }
 
   function handleFilesAdded(files: File[]) {
@@ -312,6 +393,7 @@ export function UploadWorkspace() {
         .map((plan) => (plan.plan_id === planId ? nextPlan : plan))
         .sort((left, right) => left.storey_index - right.storey_index),
     }));
+    setNeedsRebuild((current) => current || job.status === "completed");
   }
 
   async function handleSaveAnnotations() {
@@ -372,6 +454,14 @@ export function UploadWorkspace() {
     }
   }
 
+  async function handleAutoDetectPlan(planId: string): Promise<AutoDetectResult> {
+    const ensuredJobId = await ensureDraftJob();
+    return autodetectPlanSegments(ensuredJobId, planId, {
+      page: 1,
+      mode: "raster",
+    });
+  }
+
   return (
     <WorkspaceShell
       description="複数階の PDF を積み上げ、順序や開始階を調整してからトレース保存と IFC 生成へ進める画面です。"
@@ -400,6 +490,7 @@ export function UploadWorkspace() {
             selectedPlanId={selectedPlanId}
             onChangeAnnotations={handleChangePlanAnnotations}
             onSaveAnnotations={handleSaveAnnotations}
+            onAutoDetectPlan={handleAutoDetectPlan}
             onSelectedPlanIdChange={setSelectedPlanId}
           />
         </div>
@@ -410,6 +501,7 @@ export function UploadWorkspace() {
           canStart={plans.length > 0}
           isStarting={isStarting}
           jobId={job.id}
+          needsRebuild={needsRebuild}
           planCount={plans.length}
           progress={job.progress}
           startLevelLabel={startLevelLabel}

@@ -9,4 +9,5 @@ pnpm-debug.log*
 dist
 coverage
 .DS_Store
+api/data/jobs/
 api/storage/artifacts/*.ifc
