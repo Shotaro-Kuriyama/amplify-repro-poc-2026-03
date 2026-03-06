@@ -46,6 +46,20 @@ def _setup_model(project_name: str):
     return model, building, body_context
 
 
+class IfcGenerationError(Exception):
+    """IFC 生成処理で回復不能なエラーが発生した場合に送出する。"""
+
+    def __init__(self, message: str, *, detail: str | None = None):
+        super().__init__(message)
+        self.detail = detail or message
+
+
+# px_to_m が未設定のときに使う仮のスケール (1 px = 1 mm)。
+# ユーザーがスケール校正を行うまでの暫定値であり、表示はされるが
+# 寸法は正確ではない旨を承知のうえで使う。
+_FALLBACK_PX_TO_M = 0.001
+
+
 def create_ifc_from_annotations(
     destination: Path,
     *,
@@ -66,6 +80,9 @@ def create_ifc_from_annotations(
         "upper": 1,
     }.get(start_level or "ground", 0)
 
+    total_walls_created = 0
+    skipped_plans_no_scale: list[str] = []
+
     for plan in plans:
         storey_index = int(plan.get("storey_index", 0))
         storey_name = str(plan.get("plan_name") or f"Storey {storey_index + 1}")
@@ -73,15 +90,25 @@ def create_ifc_from_annotations(
         aggregate.assign_object(model, products=[storey], relating_object=building)
         geometry.edit_object_placement(model, product=storey, matrix=np.eye(4))
 
-        px_to_m = float(plan.get("px_to_m") or 0.0)
+        raw_px_to_m = plan.get("px_to_m")
+        px_to_m = float(raw_px_to_m) if raw_px_to_m is not None and float(raw_px_to_m) > 0 else 0.0
         wall_height_m = float(plan.get("wall_height_m") or 2.4)
         wall_thickness_m = float(plan.get("wall_thickness_m") or 0.12)
         storey_elevation_m = float(storey_index + start_level_offset) * default_storey_height_m
 
+        segments = plan.get("segments", [])
+
+        # px_to_m が未設定でもセグメントがある場合はフォールバックスケールを使う。
+        # これにより「スケール未校正だがセグメント検出済み」のケースでも
+        # viewer が表示可能な geometry を持つ IFC が生成される。
+        if px_to_m <= 0 and segments:
+            px_to_m = _FALLBACK_PX_TO_M
+            skipped_plans_no_scale.append(storey_name)
+
         if px_to_m <= 0:
             continue
 
-        for segment_index, segment in enumerate(plan.get("segments", []), start=1):
+        for segment_index, segment in enumerate(segments, start=1):
             x1_m = float(segment["x1_px"]) * px_to_m
             y1_m = float(segment["y1_px"]) * px_to_m
             x2_m = float(segment["x2_px"]) * px_to_m
@@ -108,6 +135,21 @@ def create_ifc_from_annotations(
                 is_si=True,
             )
             geometry.assign_representation(model, product=wall, representation=wall_representation)
+            total_walls_created += 1
+
+    # --- 生成後 validation ---
+    # geometry がゼロの IFC は viewer 側で mergeBufferGeometries クラッシュを
+    # 引き起こすため、ここで検出して明示エラーにする。
+    if total_walls_created == 0:
+        total_segments = sum(len(p.get("segments", [])) for p in plans)
+        raise IfcGenerationError(
+            "表示可能な壁ジオメトリが生成されませんでした。",
+            detail=(
+                f"plans={len(plans)}, "
+                f"total_segments={total_segments}, "
+                f"skipped_no_scale={skipped_plans_no_scale}"
+            ),
+        )
 
     model.write(str(destination))
     return destination

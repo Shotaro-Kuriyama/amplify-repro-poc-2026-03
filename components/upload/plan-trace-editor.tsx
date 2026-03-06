@@ -20,6 +20,19 @@ import { cn } from "@/lib/utils";
 
 type EditorMode = "draw" | "select" | "calibrate";
 
+// よく使われる住宅図面の縮尺プリセット。
+// PDF の内部座標は 1 unit = 1/72 inch = 0.352778 mm。
+// 実寸への変換率: px_to_m = (1/72 inch) × 0.0254 m/inch × scale
+// 例: 1:50 → 1 PDF unit = 0.352778mm × 50 = 17.639mm = 0.017639m
+const SCALE_PRESETS = [
+  { label: "1:50 (住宅一般)", scale: 50 },
+  { label: "1:100 (集合住宅/概要)", scale: 100 },
+  { label: "1:200 (配置図)", scale: 200 },
+  { label: "1:20 (詳細図)", scale: 20 },
+] as const;
+
+const PDF_UNIT_TO_METERS = (1 / 72) * 0.0254; // 1 PDF unit → meters
+
 type Point = {
   x: number;
   y: number;
@@ -247,6 +260,22 @@ export function PlanTraceEditor({
       px_to_m: actualMeters / calibrationDistancePx,
     });
     setCalibrationPoints([]);
+  }
+
+  function applyScalePreset(drawingScale: number) {
+    if (!activeAnnotations) {
+      return;
+    }
+
+    // PDF の内部座標系では 1 unit = 1/72 inch。
+    // 図面の縮尺が 1:N のとき、PDF 上の 1 unit は
+    // 実寸で (1/72 inch × 0.0254 m/inch × N) メートルに相当する。
+    const pxToM = PDF_UNIT_TO_METERS * drawingScale;
+
+    onChangeAnnotations(activeAnnotations.plan_id, {
+      ...activeAnnotations,
+      px_to_m: pxToM,
+    });
   }
 
   function updateActiveGhostSegments(updater: (current: GhostSegment[]) => GhostSegment[]) {
@@ -576,7 +605,7 @@ export function PlanTraceEditor({
                     <div>
                       <div className="text-sm font-medium text-slate-800">スケール校正</div>
                       <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                        Calibrate モードで 2 点を打ち、実寸を m 単位で入力してください。
+                        プリセットを使うか、Calibrate モードで 2 点を打って実寸を入力してください。
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -591,6 +620,25 @@ export function PlanTraceEditor({
                       </Button>
                     </div>
                   </div>
+
+                  <div className="mt-3">
+                    <div className="mb-2 text-xs font-medium text-slate-600">縮尺プリセット</div>
+                    <div className="flex flex-wrap gap-2">
+                      {SCALE_PRESETS.map((preset) => (
+                        <Button
+                          key={preset.scale}
+                          className="text-xs"
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                          onClick={() => applyScalePreset(preset.scale)}
+                        >
+                          {preset.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
                     <input
                       className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
@@ -612,7 +660,7 @@ export function PlanTraceEditor({
                   <div className="mt-2 text-sm text-slate-600">
                     {calibrationDistancePx
                       ? `計測距離: ${calibrationDistancePx.toFixed(2)} px`
-                      : "2 点を選択するとピクセル距離を表示します。"}
+                      : "Calibrate モードで 2 点を選択するか、上のプリセットを使用してください。"}
                   </div>
                 </div>
 

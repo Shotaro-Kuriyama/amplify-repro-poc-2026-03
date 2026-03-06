@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .autodetect import AutoDetectError, detect_wall_segments_from_pdf
-from .ifc_factory import create_ifc_from_annotations, create_wall_ifc
+from .ifc_factory import IfcGenerationError, create_ifc_from_annotations, create_wall_ifc
 from .job_store import (
     JobRecord,
     PlanRecord,
@@ -167,29 +167,43 @@ def plan_snapshots(job: JobRecord, request: Request) -> list[PlanSnapshotRespons
     return snapshots
 
 
+_MIN_VALID_IFC_SIZE = 2000  # geometry 入りの IFC は最低でも ~2500 bytes 以上になる
+
+
 def build_wall_ifc(job: JobRecord) -> Path:
     artifact_path = artifact_path_for(job.id)
+    # キャッシュ済みの IFC があっても、サイズが極端に小さい場合は
+    # geometry が欠落している可能性が高いので再生成する。
     if artifact_path.exists():
-        return artifact_path
+        if artifact_path.stat().st_size >= _MIN_VALID_IFC_SIZE:
+            return artifact_path
+        # 空 IFC キャッシュを削除して再生成
+        artifact_path.unlink(missing_ok=True)
 
     annotations = load_annotations(JOB_DATA_DIR, job)
     has_segments = any(plan.get("segments") for plan in annotations.get("plans", []))
 
-    if has_segments:
-        create_ifc_from_annotations(
-            artifact_path,
-            project_name=f"Job {job.id}",
-            annotations=annotations,
-            start_level=job.start_level,
-        )
-    else:
-        wall_name = job.plans[0].name if job.plans else "Sample Wall"
-        create_wall_ifc(
-            artifact_path,
-            project_name=f"Job {job.id}",
-            wall_name=wall_name,
-            wall_length_m=max(4.0, float(max(1, len(job.plans))) * 2.0),
-        )
+    try:
+        if has_segments:
+            create_ifc_from_annotations(
+                artifact_path,
+                project_name=f"Job {job.id}",
+                annotations=annotations,
+                start_level=job.start_level,
+            )
+        else:
+            wall_name = job.plans[0].name if job.plans else "Sample Wall"
+            create_wall_ifc(
+                artifact_path,
+                project_name=f"Job {job.id}",
+                wall_name=wall_name,
+                wall_length_m=max(4.0, float(max(1, len(job.plans))) * 2.0),
+            )
+    except IfcGenerationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"IFC 生成に失敗しました: {exc.detail}",
+        ) from exc
 
     return artifact_path
 

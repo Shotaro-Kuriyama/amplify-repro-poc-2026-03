@@ -4,6 +4,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+type ScaleStatus = {
+  total: number;
+  calibrated: number;
+  allCalibrated: boolean;
+};
+
 type JobViewerPanelProps = {
   artifactUrl: string | null;
   canStart: boolean;
@@ -12,6 +18,7 @@ type JobViewerPanelProps = {
   needsRebuild: boolean;
   planCount: number;
   progress: number;
+  scaleStatus: ScaleStatus;
   startLevelLabel: string;
   status: "idle" | "draft" | "queued" | "processing" | "completed" | "failed";
   viewerUrl: string | null;
@@ -88,6 +95,7 @@ export function JobViewerPanel({
   needsRebuild,
   planCount,
   progress,
+  scaleStatus,
   startLevelLabel,
   status,
   viewerUrl,
@@ -177,6 +185,28 @@ export function JobViewerPanel({
                 </div>
                 <div className="rounded-2xl bg-white/5 px-4 py-3">
                   開始階: <span className="font-semibold">{startLevelLabel}</span>
+                </div>
+                <div className={cn(
+                  "rounded-2xl px-4 py-3",
+                  scaleStatus.allCalibrated
+                    ? "bg-white/5"
+                    : scaleStatus.total > 0
+                      ? "border border-amber-400/30 bg-amber-400/10"
+                      : "bg-white/5",
+                )}>
+                  スケール校正:{" "}
+                  <span className="font-semibold">
+                    {scaleStatus.total === 0
+                      ? "プランなし"
+                      : scaleStatus.allCalibrated
+                        ? `${scaleStatus.calibrated}/${scaleStatus.total} 完了`
+                        : `${scaleStatus.calibrated}/${scaleStatus.total} 校正済み`}
+                  </span>
+                  {!scaleStatus.allCalibrated && scaleStatus.total > 0 ? (
+                    <div className="mt-1 text-xs text-amber-200">
+                      Calibrate モードでスケールを設定すると正確な寸法になります
+                    </div>
+                  ) : null}
                 </div>
                 <div className="rounded-2xl bg-white/5 px-4 py-3">
                   ジョブID: <span className="font-semibold">{jobId ?? "未作成"}</span>

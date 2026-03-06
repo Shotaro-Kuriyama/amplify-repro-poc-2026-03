@@ -102,9 +102,11 @@ function countOccurrences(source: string, token: string) {
 }
 
 async function inspectIfcGeometryHints(modelUrl: string) {
+  // NOTE: credentials は不要（静的 IFC ファイル取得のみ）。
+  // credentials: "include" にするとバックエンド側の
+  // allow_credentials=False と矛盾して CORS エラーになる。
   const response = await fetch(modelUrl, {
     cache: "no-store",
-    credentials: "include",
   });
 
   if (!response.ok) {
@@ -541,15 +543,24 @@ export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
           USE_FAST_BOOLS: true,
         });
 
-        const geometryHints = await inspectIfcGeometryHints(modelUrl);
-        console.info("[IFC Viewer] IFC geometry hints", {
-          modelUrl,
-          ...geometryHints,
-        });
-        if (!geometryHints.hasRenderableGeometryHint) {
-          throw new Error(
-            "IFC 内に表示可能な形状要素が見つかりませんでした。IFC が空、または形状未定義の可能性があります。",
-          );
+        // geometry hints の事前診断。失敗しても loadIfcUrl 自体はブロックしない。
+        let geometryHintsAvailable = true;
+        try {
+          const geometryHints = await inspectIfcGeometryHints(modelUrl);
+          console.info("[IFC Viewer] IFC geometry hints", {
+            modelUrl,
+            ...geometryHints,
+          });
+          if (!geometryHints.hasRenderableGeometryHint) {
+            console.warn(
+              "[IFC Viewer] IFC に表示可能な形状要素が見つかりませんでした。" +
+                "空 IFC または形状未定義の可能性があります。loadIfcUrl はそのまま試行します。",
+            );
+            geometryHintsAvailable = false;
+          }
+        } catch (hintsError) {
+          console.warn("[IFC Viewer] geometry hints の事前診断に失敗しました。loadIfcUrl は続行します。", hintsError);
+          geometryHintsAvailable = false;
         }
 
         console.info("[IFC Viewer] before loadIfcUrl", {
@@ -566,12 +577,13 @@ export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
           const diagnostics = collectIfcStateDiagnostics(ifcManager);
           console.error("[IFC Viewer] loadIfcUrl returned null", {
             diagnostics,
+            geometryHintsAvailable,
             modelUrl,
           });
 
           throw new Error(
             diagnostics.modelCount === 0 || diagnostics.modelsWithGeometry === 0
-              ? "IFC の幾何生成に失敗しました。shape 情報が空、または current web-ifc 組み合わせで解釈できない可能性があります。"
+              ? "IFC の幾何生成に失敗しました。shape 情報が空、または現在の web-ifc 組み合わせで解釈できない可能性があります。"
               : "IFC モデルのロードに失敗しました。",
           );
         }
@@ -604,10 +616,30 @@ export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
           return;
         }
 
+        // geometry merge error の特定: mergeBufferGeometries 内で
+        // geometries[0].index を読めない場合のパターン
+        const isGeometryMergeError =
+          error instanceof TypeError &&
+          error.message.includes("Cannot read properties of undefined") &&
+          error.stack?.includes("mergeBufferGeometries");
+
+        let userMessage: string;
+        if (isGeometryMergeError) {
+          userMessage =
+            "IFC の幾何データ統合中にエラーが発生しました。形状要素が空、" +
+            "または web-ifc が解釈できない構造の可能性があります。";
+          console.error(
+            "[IFC Viewer] mergeBufferGeometries crash detected — " +
+              "IFC に空 geometry が含まれているか、web-ifc-three の空配列防御が不足しています。",
+          );
+        } else if (error instanceof Error) {
+          userMessage = error.message;
+        } else {
+          userMessage = "IFC Viewer の初期化/読込に失敗しました。";
+        }
+
         setViewerState("error");
-        setErrorMessage(
-          error instanceof Error ? error.message : "IFC Viewer の初期化/読込に失敗しました。",
-        );
+        setErrorMessage(userMessage);
       }
     })();
 

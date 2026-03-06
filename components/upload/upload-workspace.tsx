@@ -151,6 +151,15 @@ export function UploadWorkspace() {
   );
   const isPlanEditingLocked = Boolean(job.id);
 
+  // スケール校正状態の集計
+  const scaleStatus = useMemo(() => {
+    const total = annotations.plans.length;
+    const calibrated = annotations.plans.filter(
+      (plan) => plan.px_to_m !== null && plan.px_to_m > 0,
+    ).length;
+    return { total, calibrated, allCalibrated: total > 0 && calibrated === total };
+  }, [annotations.plans]);
+
   useEffect(() => {
     setAnnotations((current) => synchronizeAnnotations(plans, current));
   }, [plans]);
@@ -250,9 +259,13 @@ export function UploadWorkspace() {
           return;
         }
 
-        setActionErrorMessage(
-          toUserErrorMessage(error, "ジョブ状態の取得に失敗しました。"),
-        );
+        // 422 = IFC 生成失敗（壁ジオメトリが0件など）
+        const is422 = error instanceof ApiError && error.status === 422;
+        const errorMessage = is422
+          ? `IFC 生成エラー: ${error.message}\nスケール校正を確認し、Rebuild してください。`
+          : toUserErrorMessage(error, "ジョブ状態の取得に失敗しました。");
+
+        setActionErrorMessage(errorMessage);
         setJob((current) => ({
           ...current,
           status: "failed",
@@ -429,6 +442,20 @@ export function UploadWorkspace() {
       return;
     }
 
+    // スケール未校正の場合は確認ダイアログを表示
+    if (!scaleStatus.allCalibrated) {
+      const uncalibratedCount = scaleStatus.total - scaleStatus.calibrated;
+      const confirmed = window.confirm(
+        `${uncalibratedCount} 件のプランでスケールが未校正です。\n` +
+          "仮スケール（1px = 1mm）で IFC を生成しますが、寸法は正確ではありません。\n\n" +
+          "Calibrate モードでスケール校正してから Start すると、正確な寸法の IFC が生成されます。\n\n" +
+          "このまま仮スケールで生成しますか？",
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
     setActionErrorMessage(null);
     setSaveErrorMessage(null);
     setIsStarting(true);
@@ -504,6 +531,7 @@ export function UploadWorkspace() {
           needsRebuild={needsRebuild}
           planCount={plans.length}
           progress={job.progress}
+          scaleStatus={scaleStatus}
           startLevelLabel={startLevelLabel}
           status={job.status}
           viewerUrl={job.artifactUrl}
