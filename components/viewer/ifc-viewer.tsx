@@ -1,7 +1,7 @@
 "use client";
 
 import { Box3, Color, PerspectiveCamera, Sphere, Vector3, type Object3D } from "three";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IfcViewerAPI } from "web-ifc-viewer";
 
 import { cn } from "@/lib/utils";
@@ -12,35 +12,39 @@ type IfcViewerProps = {
 };
 
 type ViewerState = "idle" | "loading" | "ready" | "error";
+
 const IFC_WASM_BASE_PATH = "/vendor/ifc/";
-const IFC_WASM_FILE_URL = `${IFC_WASM_BASE_PATH}web-ifc.wasm`;
+const IFC_WASM_FILENAME = "web-ifc.wasm";
+
+type InternalWebIfcApi = {
+  SetWasmPath?: (path: string, absolute?: boolean) => void;
+  isWasmPathAbsolute?: boolean;
+  wasmPath?: string;
+};
 
 type InternalIfcManager = {
-  loader?: {
-    ifcManager?: {
-      applyWebIfcConfig?: (settings: Record<string, unknown>) => Promise<void>;
-      state?: {
-        api?: {
-          SetWasmPath?: (path: string, absolute?: boolean) => void;
-          isWasmPathAbsolute?: boolean;
-          wasmPath?: string;
-        };
-      };
-      useWebWorkers?: (active: boolean, path?: string) => Promise<void>;
+  setWasmPath?: (path: string) => Promise<void> | void;
+  applyWebIfcConfig?: (settings: Record<string, unknown>) => Promise<void> | void;
+  useWebWorkers?: (active: boolean, path?: string) => Promise<void> | void;
+  state?: {
+    api?: InternalWebIfcApi;
+    wasmPath?: string;
+    worker?: {
+      active?: boolean;
+      path?: string;
     };
-    loadAsync?: (
-      url: string,
-      onProgress?: (event: ProgressEvent) => void,
-    ) => Promise<unknown>;
+    webIfcSettings?: Record<string, unknown>;
   };
-  addIfcModel?: (model: unknown) => void;
+};
+
+type InternalIfcFacade = {
+  loader?: {
+    ifcManager?: InternalIfcManager;
+  };
 };
 
 type CameraControlsApi = {
-  fitToSphere?: (
-    sphere: Sphere,
-    enableTransition?: boolean,
-  ) => Promise<unknown>;
+  fitToSphere?: (sphere: Sphere, enableTransition?: boolean) => Promise<unknown>;
   setTarget?: (
     targetX: number,
     targetY: number,
@@ -67,6 +71,22 @@ type CameraControlsApi = {
   ) => Promise<unknown>;
   update?: (delta: number) => void;
 };
+
+function ensureTrailingSlash(value: string) {
+  return value.endsWith("/") ? value : `${value}/`;
+}
+
+function buildAbsoluteUrl(path: string) {
+  return new URL(path, window.location.origin).toString();
+}
+
+function buildAbsoluteWasmBaseUrl() {
+  return ensureTrailingSlash(buildAbsoluteUrl(IFC_WASM_BASE_PATH));
+}
+
+function buildAbsoluteWasmFileUrl() {
+  return new URL(IFC_WASM_FILENAME, buildAbsoluteWasmBaseUrl()).toString();
+}
 
 function getBoundingBoxCorners(bounds: Box3): Vector3[] {
   const { max, min } = bounds;
@@ -103,8 +123,8 @@ function getProjectedBoundsCenterNdc(bounds: Box3, camera: PerspectiveCamera) {
   };
 }
 
-async function probeIfcWasmAsset() {
-  const response = await fetch(IFC_WASM_FILE_URL, {
+async function probeIfcWasmAsset(wasmFileUrl: string) {
+  const response = await fetch(wasmFileUrl, {
     cache: "no-store",
   });
 
@@ -115,41 +135,81 @@ async function probeIfcWasmAsset() {
     bytes,
     contentType,
     status: response.status,
-    url: IFC_WASM_FILE_URL,
+    url: wasmFileUrl,
   });
 
   if (!response.ok) {
     throw new Error(
-      `WASM の取得に失敗しました (${response.status}, ${contentType}, ${bytes} bytes) ${IFC_WASM_FILE_URL}`,
+      `WASM の取得に失敗しました (${response.status}, ${contentType}, ${bytes} bytes): ${wasmFileUrl}`,
     );
   }
 }
 
-async function configureIfcWasmPath(viewer: IfcViewerAPI, internalManager: InternalIfcManager) {
-  await internalManager.loader?.ifcManager?.useWebWorkers?.(false);
-  await viewer.IFC.setWasmPath(IFC_WASM_BASE_PATH);
-  const api = internalManager.loader?.ifcManager?.state?.api;
-  api?.SetWasmPath?.(IFC_WASM_BASE_PATH, true);
+function getInternalIfcManager(viewer: IfcViewerAPI) {
+  const internalIfc = viewer.IFC as unknown as InternalIfcFacade;
+  return internalIfc.loader?.ifcManager ?? null;
+}
 
-  if (api && api.isWasmPathAbsolute !== true) {
+async function configureIfcWasmPath(viewer: IfcViewerAPI) {
+  const wasmBaseUrl = buildAbsoluteWasmBaseUrl();
+  const ifcManager = getInternalIfcManager(viewer);
+
+  // 公開 API 側
+  await viewer.IFC.setWasmPath(wasmBaseUrl);
+
+  if (!ifcManager) {
     throw new Error(
-      `WASM absolute path 設定に失敗しました (wasmPath=${api.wasmPath ?? "unknown"})`,
+      "IFC loader.ifcManager が見つかりません。WASM path を内部 runtime に反映できません。",
     );
   }
 
-  console.info("[IFC Viewer] wasmPath configured", {
-    absolute: true,
-    isWasmPathAbsolute: api?.isWasmPathAbsolute ?? null,
-    runtimeWasmPath: api?.wasmPath ?? null,
-    wasmPath: IFC_WASM_BASE_PATH,
+  // worker を明示的に無効化
+  await ifcManager.useWebWorkers?.(false);
+
+  // manager 側にも同じ absolute URL を入れる
+  await ifcManager.setWasmPath?.(wasmBaseUrl);
+
+  // runtime API にも absolute=true で直接入れる
+  const runtimeApi = ifcManager.state?.api;
+  if (!runtimeApi?.SetWasmPath) {
+    throw new Error(
+      "IFC runtime API の SetWasmPath が見つかりません。absolute WASM path を設定できません。",
+    );
+  }
+
+  runtimeApi.SetWasmPath(wasmBaseUrl, true);
+
+  console.info("[IFC Viewer] runtime inspection", {
+    hasIfcManager: Boolean(ifcManager),
+    hasRuntimeApi: Boolean(runtimeApi),
+    hasRuntimeSetWasmPath: Boolean(runtimeApi.SetWasmPath),
   });
+
+  console.info("[IFC Viewer] wasmPath configured", {
+    publicWasmBaseUrl: wasmBaseUrl,
+    runtimeWasmPath: runtimeApi.wasmPath ?? null,
+    isWasmPathAbsolute: runtimeApi.isWasmPathAbsolute ?? null,
+    managerStateWasmPath: ifcManager.state?.wasmPath ?? null,
+    workerActive: ifcManager.state?.worker?.active ?? null,
+    workerPath: ifcManager.state?.worker?.path ?? null,
+  });
+
+  return {
+    ifcManager,
+    runtimeApi,
+    wasmBaseUrl,
+  };
 }
 
 function getIfcModelsForFraming(viewer: IfcViewerAPI): Object3D[] {
   const models = viewer.context.items.ifcModels as unknown[];
   return models.filter(
     (model): model is Object3D =>
-      typeof model === "object" && model !== null && "position" in model,
+      typeof model === "object" &&
+      model !== null &&
+      "position" in model &&
+      "updateMatrixWorld" in model &&
+      "geometry" in model,
   );
 }
 
@@ -280,6 +340,7 @@ async function focusIfcModelsInView(viewer: IfcViewerAPI) {
     const projectedCenter = hasPerspectiveCamera
       ? getProjectedBoundsCenterNdc(bounds, camera as PerspectiveCamera)
       : { x: 0, y: 0 };
+
     console.info("[IFC Viewer] projected center", {
       focalOffsetAfter: {
         x: focalOffsetAfter.x,
@@ -311,133 +372,135 @@ async function focusIfcModelsInView(viewer: IfcViewerAPI) {
 export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<IfcViewerAPI | null>(null);
-  const [isViewerReady, setIsViewerReady] = useState(false);
+  const lifecycleIdRef = useRef(0);
   const [viewerState, setViewerState] = useState<ViewerState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const effectiveUrl = useMemo(() => modelUrl, [modelUrl]);
-
   useEffect(() => {
-    let cancelled = false;
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
 
-    async function setupViewer() {
-      if (!containerRef.current || viewerRef.current) {
-        return;
-      }
+    let active = true;
+    const lifecycleId = lifecycleIdRef.current + 1;
+    lifecycleIdRef.current = lifecycleId;
+    let localViewer: IfcViewerAPI | null = null;
 
-      setViewerState("loading");
+    setViewerState(modelUrl ? "loading" : "idle");
+    setErrorMessage(null);
 
+    const initializePromise = (async () => {
       try {
         const { IfcViewerAPI } = await import("web-ifc-viewer");
 
-        if (cancelled || !containerRef.current) {
+        if (!active || lifecycleId !== lifecycleIdRef.current) {
           return;
         }
 
-        const viewer = new IfcViewerAPI({
+        localViewer = new IfcViewerAPI({
           backgroundColor: new Color(0x020617),
-          container: containerRef.current,
+          container,
         });
+        viewerRef.current = localViewer;
 
-        const ifcManager = viewer.IFC as unknown as InternalIfcManager;
+        const wasmFileUrl = buildAbsoluteWasmFileUrl();
+        await probeIfcWasmAsset(wasmFileUrl);
+        const { ifcManager, runtimeApi, wasmBaseUrl } = await configureIfcWasmPath(localViewer);
 
-        await probeIfcWasmAsset();
-        await configureIfcWasmPath(viewer, ifcManager);
-        viewer.axes.setAxes(2);
-        viewer.grid.setGrid(20, 20);
-        viewerRef.current = viewer;
-        setIsViewerReady(true);
-        setViewerState("ready");
-      } catch (error) {
-        if (cancelled) {
+        localViewer.axes.setAxes(2);
+        localViewer.grid.setGrid(20, 20);
+
+        if (!modelUrl) {
+          if (active && lifecycleId === lifecycleIdRef.current) {
+            setViewerState("ready");
+          }
           return;
         }
 
-        setIsViewerReady(false);
-        setViewerState("error");
-        setErrorMessage(
-          error instanceof Error ? error.message : "IFC Viewer の初期化に失敗しました。",
-        );
-      }
-    }
-
-    setupViewer();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadModel() {
-      if (!viewerRef.current || !effectiveUrl || !isViewerReady) {
-        return;
-      }
-
-      setViewerState("loading");
-      setErrorMessage(null);
-
-      try {
-        const viewer = viewerRef.current;
-        const existingModels = [...viewer.context.items.ifcModels];
-        existingModels.forEach((model) => viewer.IFC.removeIfcModel(model.modelID));
-
-        const ifcManager = viewer.IFC as unknown as InternalIfcManager;
-
-        await probeIfcWasmAsset();
-        await configureIfcWasmPath(viewer, ifcManager);
-
-        await ifcManager.loader?.ifcManager?.applyWebIfcConfig?.({
+        await ifcManager.applyWebIfcConfig?.({
           COORDINATE_TO_ORIGIN: false,
           USE_FAST_BOOLS: true,
         });
-        await configureIfcWasmPath(viewer, ifcManager);
 
-        const model = await ifcManager.loader?.loadAsync?.(effectiveUrl);
+        console.info("[IFC Viewer] before loadIfcUrl", {
+          modelUrl,
+          wasmBaseUrl,
+          wasmFileUrl,
+          runtimeWasmPath: runtimeApi?.wasmPath ?? null,
+          isWasmPathAbsolute: runtimeApi?.isWasmPathAbsolute ?? null,
+          currentIfcModelCount: localViewer.context.items.ifcModels.length,
+        });
 
-        if (!model || !ifcManager.addIfcModel) {
+        const loadedModel = await localViewer.IFC.loadIfcUrl(modelUrl, false);
+        if (!loadedModel) {
           throw new Error("IFC モデルのロードに失敗しました。");
         }
 
-        ifcManager.addIfcModel(model);
-        await focusIfcModelsInView(viewer);
+        if (!active || lifecycleId !== lifecycleIdRef.current) {
+          return;
+        }
 
-        if (cancelled) {
+        console.info("[IFC Viewer] loadIfcUrl success", {
+          currentIfcModelCount: localViewer.context.items.ifcModels.length,
+          modelID:
+            typeof loadedModel === "object" &&
+            loadedModel !== null &&
+            "modelID" in loadedModel
+              ? (loadedModel as { modelID?: unknown }).modelID
+              : null,
+        });
+
+        await focusIfcModelsInView(localViewer);
+
+        if (!active || lifecycleId !== lifecycleIdRef.current) {
           return;
         }
 
         setViewerState("ready");
       } catch (error) {
-        if (cancelled) {
+        console.error("[IFC Viewer] initialization/load failed", error);
+
+        if (!active || lifecycleId !== lifecycleIdRef.current) {
           return;
         }
 
         setViewerState("error");
         setErrorMessage(
-          error instanceof Error ? error.message : "IFC ファイルの読み込みに失敗しました。",
+          error instanceof Error ? error.message : "IFC Viewer の初期化/読込に失敗しました。",
         );
       }
-    }
-
-    loadModel();
+    })();
 
     return () => {
-      cancelled = true;
-    };
-  }, [effectiveUrl, isViewerReady]);
+      active = false;
 
-  useEffect(() => {
-    return () => {
-      const viewer = viewerRef.current;
-      viewerRef.current = null;
+      const cleanup = async () => {
+        try {
+          await initializePromise;
+        } catch {
+          // state 表示済み
+        }
 
-      if (viewer) {
-        void viewer.dispose();
-      }
+        const viewer = localViewer;
+        if (!viewer) {
+          return;
+        }
+
+        if (viewerRef.current === viewer) {
+          viewerRef.current = null;
+        }
+
+        try {
+          await viewer.dispose();
+        } catch (error) {
+          console.error("[IFC Viewer] dispose failed", error);
+        }
+      };
+
+      void cleanup();
     };
-  }, []);
+  }, [modelUrl]);
 
   return (
     <div className="relative h-full min-h-[420px] overflow-hidden rounded-[1.25rem] border border-white/10 bg-slate-950">
