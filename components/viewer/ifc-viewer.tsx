@@ -28,6 +28,7 @@ type InternalIfcManager = {
   useWebWorkers?: (active: boolean, path?: string) => Promise<void> | void;
   state?: {
     api?: InternalWebIfcApi;
+    models?: Record<string, unknown> | unknown[];
     wasmPath?: string;
     worker?: {
       active?: boolean;
@@ -72,6 +73,13 @@ type CameraControlsApi = {
   update?: (delta: number) => void;
 };
 
+type IfcStateDiagnostics = {
+  invalidMeshModelIds: string[];
+  missingGeometryModelIds: string[];
+  modelCount: number;
+  modelsWithGeometry: number;
+};
+
 function ensureTrailingSlash(value: string) {
   return value.endsWith("/") ? value : `${value}/`;
 }
@@ -86,6 +94,114 @@ function buildAbsoluteWasmBaseUrl() {
 
 function buildAbsoluteWasmFileUrl() {
   return new URL(IFC_WASM_FILENAME, buildAbsoluteWasmBaseUrl()).toString();
+}
+
+function countOccurrences(source: string, token: string) {
+  const matches = source.match(new RegExp(token, "g"));
+  return matches ? matches.length : 0;
+}
+
+async function inspectIfcGeometryHints(modelUrl: string) {
+  const response = await fetch(modelUrl, {
+    cache: "no-store",
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    throw new Error(`IFC ファイルの事前読込に失敗しました: ${response.status} ${response.statusText}`);
+  }
+
+  const text = await response.text();
+  const hints = {
+    IFCSHAPEREPRESENTATION: countOccurrences(text, "IFCSHAPEREPRESENTATION"),
+    IFCEXTRUDEDAREASOLID: countOccurrences(text, "IFCEXTRUDEDAREASOLID"),
+    IFCTRIANGULATEDFACESET: countOccurrences(text, "IFCTRIANGULATEDFACESET"),
+    IFCPOLYGONALFACESET: countOccurrences(text, "IFCPOLYGONALFACESET"),
+    IFCFACETEDBREP: countOccurrences(text, "IFCFACETEDBREP"),
+  };
+  const geometryTokenCount = Object.values(hints).reduce((sum, value) => sum + value, 0);
+
+  return {
+    bytes: text.length,
+    geometryTokenCount,
+    hasRenderableGeometryHint: geometryTokenCount > 0,
+    hints,
+  };
+}
+
+function collectIfcStateDiagnostics(ifcManager: InternalIfcManager | null): IfcStateDiagnostics {
+  if (!ifcManager?.state?.models) {
+    return {
+      modelCount: 0,
+      modelsWithGeometry: 0,
+      invalidMeshModelIds: [],
+      missingGeometryModelIds: [],
+    };
+  }
+
+  const entries = Object.entries(ifcManager.state.models as Record<string, unknown>);
+  const invalidMeshModelIds: string[] = [];
+  const missingGeometryModelIds: string[] = [];
+  let modelsWithGeometry = 0;
+
+  for (const [id, model] of entries) {
+    const mesh = (model as { mesh?: unknown } | undefined)?.mesh as
+      | { removeFromParent?: unknown; geometry?: unknown }
+      | undefined;
+
+    const hasMeshObject = typeof mesh === "object" && mesh !== null;
+    const hasRemoveFromParent =
+      hasMeshObject && typeof (mesh as { removeFromParent?: unknown }).removeFromParent === "function";
+    const hasGeometry = hasMeshObject && typeof (mesh as { geometry?: unknown }).geometry === "object";
+
+    if (!hasRemoveFromParent) {
+      invalidMeshModelIds.push(id);
+      continue;
+    }
+
+    if (!hasGeometry) {
+      missingGeometryModelIds.push(id);
+      continue;
+    }
+
+    modelsWithGeometry += 1;
+  }
+
+  return {
+    modelCount: entries.length,
+    modelsWithGeometry,
+    invalidMeshModelIds,
+    missingGeometryModelIds,
+  };
+}
+
+function sanitizeIfcStateForDispose(ifcManager: InternalIfcManager | null) {
+  if (!ifcManager?.state?.models) {
+    return [];
+  }
+
+  const models = ifcManager.state.models as Record<string, unknown>;
+  const removedModelIds: string[] = [];
+
+  for (const [id, model] of Object.entries(models)) {
+    const mesh = (model as { mesh?: unknown } | undefined)?.mesh as
+      | {
+          removeFromParent?: unknown;
+          geometry?: { dispose?: unknown; disposeBoundsTree?: unknown } | undefined;
+        }
+      | undefined;
+
+    const hasRemoveFromParent = typeof mesh?.removeFromParent === "function";
+    const hasGeometryDispose = typeof mesh?.geometry?.dispose === "function";
+    if (hasRemoveFromParent && hasGeometryDispose) {
+      continue;
+    }
+
+    removedModelIds.push(id);
+    delete models[id];
+  }
+
+  return removedModelIds;
 }
 
 function getBoundingBoxCorners(bounds: Box3): Vector3[] {
@@ -386,6 +502,7 @@ export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
     const lifecycleId = lifecycleIdRef.current + 1;
     lifecycleIdRef.current = lifecycleId;
     let localViewer: IfcViewerAPI | null = null;
+    let activeIfcManager: InternalIfcManager | null = null;
 
     setViewerState(modelUrl ? "loading" : "idle");
     setErrorMessage(null);
@@ -407,6 +524,7 @@ export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
         const wasmFileUrl = buildAbsoluteWasmFileUrl();
         await probeIfcWasmAsset(wasmFileUrl);
         const { ifcManager, runtimeApi, wasmBaseUrl } = await configureIfcWasmPath(localViewer);
+        activeIfcManager = ifcManager;
 
         localViewer.axes.setAxes(2);
         localViewer.grid.setGrid(20, 20);
@@ -423,6 +541,17 @@ export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
           USE_FAST_BOOLS: true,
         });
 
+        const geometryHints = await inspectIfcGeometryHints(modelUrl);
+        console.info("[IFC Viewer] IFC geometry hints", {
+          modelUrl,
+          ...geometryHints,
+        });
+        if (!geometryHints.hasRenderableGeometryHint) {
+          throw new Error(
+            "IFC 内に表示可能な形状要素が見つかりませんでした。IFC が空、または形状未定義の可能性があります。",
+          );
+        }
+
         console.info("[IFC Viewer] before loadIfcUrl", {
           modelUrl,
           wasmBaseUrl,
@@ -434,7 +563,17 @@ export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
 
         const loadedModel = await localViewer.IFC.loadIfcUrl(modelUrl, false);
         if (!loadedModel) {
-          throw new Error("IFC モデルのロードに失敗しました。");
+          const diagnostics = collectIfcStateDiagnostics(ifcManager);
+          console.error("[IFC Viewer] loadIfcUrl returned null", {
+            diagnostics,
+            modelUrl,
+          });
+
+          throw new Error(
+            diagnostics.modelCount === 0 || diagnostics.modelsWithGeometry === 0
+              ? "IFC の幾何生成に失敗しました。shape 情報が空、または current web-ifc 組み合わせで解釈できない可能性があります。"
+              : "IFC モデルのロードに失敗しました。",
+          );
         }
 
         if (!active || lifecycleId !== lifecycleIdRef.current) {
@@ -490,6 +629,13 @@ export function IfcViewer({ modelUrl, statusLabel }: IfcViewerProps) {
         if (viewerRef.current === viewer) {
           viewerRef.current = null;
         }
+
+        const diagnosticsBeforeDispose = collectIfcStateDiagnostics(activeIfcManager);
+        const sanitizedModelIds = sanitizeIfcStateForDispose(activeIfcManager);
+        console.info("[IFC Viewer] cleanup diagnostics", {
+          diagnosticsBeforeDispose,
+          sanitizedModelIds,
+        });
 
         try {
           await viewer.dispose();
