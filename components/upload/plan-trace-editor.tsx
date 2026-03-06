@@ -41,7 +41,21 @@ type Point = {
 type GhostSegment = SegmentInput & {
   accepted: boolean;
   id: string;
+  segment_type?: "wall" | "door" | "window";
 };
+
+const SEGMENT_COLORS: Record<string, string> = {
+  wall: "#38bdf8",    // sky-400
+  door: "#22c55e",    // green-500
+  window: "#fb923c",  // orange-400
+};
+
+function segmentStrokeColor(segmentType?: string, isSelected?: boolean): string {
+  if (isSelected) {
+    return "#f97316"; // orange-500 for selection highlight
+  }
+  return SEGMENT_COLORS[segmentType ?? "wall"] ?? SEGMENT_COLORS.wall;
+}
 
 type PlanTraceEditorProps = {
   annotations: JobAnnotations;
@@ -301,7 +315,11 @@ export function PlanTraceEditor({
     try {
       const result = await onAutoDetectPlan(activePlan.id);
       const ghostSegments: GhostSegment[] = result.segments.map((segment) => ({
-        ...segment,
+        x1_px: segment.x1_px,
+        y1_px: segment.y1_px,
+        x2_px: segment.x2_px,
+        y2_px: segment.y2_px,
+        segment_type: segment.segment_type ?? "wall",
         accepted: true,
         id: crypto.randomUUID(),
       }));
@@ -384,11 +402,12 @@ export function PlanTraceEditor({
 
     const acceptedCandidates = activeGhostSegments
       .filter((segment) => segment.accepted)
-      .map<SegmentInput>(({ x1_px, y1_px, x2_px, y2_px }) => ({
+      .map<SegmentInput>(({ x1_px, y1_px, x2_px, y2_px, segment_type }) => ({
         x1_px,
         y1_px,
         x2_px,
         y2_px,
+        segment_type,
       }));
 
     if (acceptedCandidates.length === 0) {
@@ -405,6 +424,7 @@ export function PlanTraceEditor({
     const appendedSegments: PlanSegment[] = uniqueCandidates.map((segment) => ({
       ...segment,
       id: crypto.randomUUID(),
+      segment_type: segment.segment_type ?? "wall",
     }));
 
     onChangeAnnotations(activeAnnotations.plan_id, {
@@ -682,9 +702,16 @@ export function PlanTraceEditor({
                       {activePlan?.name ?? "plan 未選択"}
                     </div>
                   </div>
-                  <Badge className="border-white/20 bg-white/10 text-white" variant="outline">
-                    {mode}
-                  </Badge>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <span className="inline-block h-2 w-4 rounded" style={{ backgroundColor: "#38bdf8" }} /> 壁
+                      <span className="inline-block h-2 w-4 rounded" style={{ backgroundColor: "#22c55e" }} /> ドア
+                      <span className="inline-block h-2 w-4 rounded" style={{ backgroundColor: "#fb923c" }} /> 窓
+                    </div>
+                    <Badge className="border-white/20 bg-white/10 text-white" variant="outline">
+                      {mode}
+                    </Badge>
+                  </div>
                 </div>
 
                 {renderErrorMessage ? (
@@ -732,6 +759,7 @@ export function PlanTraceEditor({
 
                           {activeAnnotations?.segments.map((segment) => {
                             const isSelected = segment.id === selectedSegmentId;
+                            const strokeColor = segmentStrokeColor(segment.segment_type, isSelected);
                             return (
                               <g key={segment.id}>
                                 <line
@@ -751,7 +779,7 @@ export function PlanTraceEditor({
                                   }}
                                 />
                                 <line
-                                  stroke={isSelected ? "#f97316" : "#38bdf8"}
+                                  stroke={strokeColor}
                                   strokeLinecap="round"
                                   strokeWidth={isSelected ? 5 : 3}
                                   x1={segment.x1_px}
@@ -763,37 +791,42 @@ export function PlanTraceEditor({
                             );
                           })}
 
-                          {activeGhostSegments.map((segment) => (
-                            <g key={`ghost-${segment.id}`}>
-                              <line
-                                stroke="transparent"
-                                strokeWidth={16}
-                                x1={segment.x1_px}
-                                x2={segment.x2_px}
-                                y1={segment.y1_px}
-                                y2={segment.y2_px}
-                                onClick={(event) => {
-                                  if (mode !== "select") {
-                                    return;
-                                  }
+                          {activeGhostSegments.map((segment) => {
+                            const ghostColor = segment.accepted
+                              ? (SEGMENT_COLORS[segment.segment_type ?? "wall"] ?? "#22c55e")
+                              : "#f43f5e";
+                            return (
+                              <g key={`ghost-${segment.id}`}>
+                                <line
+                                  stroke="transparent"
+                                  strokeWidth={16}
+                                  x1={segment.x1_px}
+                                  x2={segment.x2_px}
+                                  y1={segment.y1_px}
+                                  y2={segment.y2_px}
+                                  onClick={(event) => {
+                                    if (mode !== "select") {
+                                      return;
+                                    }
 
-                                  event.stopPropagation();
-                                  toggleGhostSegment(segment.id);
-                                }}
-                              />
-                              <line
-                                opacity={segment.accepted ? 0.9 : 0.45}
-                                stroke={segment.accepted ? "#22c55e" : "#f43f5e"}
-                                strokeDasharray={segment.accepted ? "12 8" : "6 10"}
-                                strokeLinecap="round"
-                                strokeWidth={segment.accepted ? 3 : 2}
-                                x1={segment.x1_px}
-                                x2={segment.x2_px}
-                                y1={segment.y1_px}
-                                y2={segment.y2_px}
-                              />
-                            </g>
-                          ))}
+                                    event.stopPropagation();
+                                    toggleGhostSegment(segment.id);
+                                  }}
+                                />
+                                <line
+                                  opacity={segment.accepted ? 0.9 : 0.45}
+                                  stroke={ghostColor}
+                                  strokeDasharray={segment.accepted ? "12 8" : "6 10"}
+                                  strokeLinecap="round"
+                                  strokeWidth={segment.accepted ? 3 : 2}
+                                  x1={segment.x1_px}
+                                  x2={segment.x2_px}
+                                  y1={segment.y1_px}
+                                  y2={segment.y2_px}
+                                />
+                              </g>
+                            );
+                          })}
 
                           {draftPoints.length >= 1 ? (
                             <>

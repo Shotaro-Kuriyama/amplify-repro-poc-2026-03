@@ -1,12 +1,17 @@
+export type SegmentType = "wall" | "door" | "window";
+
 export type PlanSegment = {
   id: string;
   x1_px: number;
   y1_px: number;
   x2_px: number;
   y2_px: number;
+  segment_type?: SegmentType;
 };
 
-export type SegmentInput = Pick<PlanSegment, "x1_px" | "y1_px" | "x2_px" | "y2_px">;
+export type SegmentInput = Pick<PlanSegment, "x1_px" | "y1_px" | "x2_px" | "y2_px"> & {
+  segment_type?: SegmentType;
+};
 
 export type PlanAnnotations = {
   plan_id: string;
@@ -180,7 +185,8 @@ export function filterUniqueSegmentsForImport(
       continue;
     }
 
-    accepted.push(normalized);
+    // segment_type を保持する
+    accepted.push({ ...normalized, segment_type: candidate.segment_type });
   }
 
   return accepted;

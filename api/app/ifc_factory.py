@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +109,10 @@ def create_ifc_from_annotations(
         if px_to_m <= 0:
             continue
 
+        wall_count = 0
+        door_count = 0
+        window_count = 0
+
         for segment_index, segment in enumerate(segments, start=1):
             x1_m = float(segment["x1_px"]) * px_to_m
             y1_m = float(segment["y1_px"]) * px_to_m
@@ -117,25 +122,132 @@ def create_ifc_from_annotations(
             if abs(x1_m - x2_m) < 1e-6 and abs(y1_m - y2_m) < 1e-6:
                 continue
 
-            wall = root.create_entity(
-                model,
-                ifc_class="IfcWall",
-                name=f"{storey_name} Wall {segment_index}",
-            )
-            spatial.assign_container(model, products=[wall], relating_structure=storey)
-            wall_representation = geometry.create_2pt_wall(
-                model,
-                element=wall,
-                context=body_context,
-                p1=(x1_m, y1_m),
-                p2=(x2_m, y2_m),
-                elevation=storey_elevation_m,
-                height=wall_height_m,
-                thickness=wall_thickness_m,
-                is_si=True,
-            )
-            geometry.assign_representation(model, product=wall, representation=wall_representation)
-            total_walls_created += 1
+            segment_type = str(segment.get("segment_type", "wall"))
+
+            if segment_type == "door":
+                door_count += 1
+                opening_width_m = math.hypot(x2_m - x1_m, y2_m - y1_m)
+                door_height_m = min(wall_height_m, 2.1)  # 標準ドア高さ 2.1m
+
+                door = root.create_entity(
+                    model,
+                    ifc_class="IfcDoor",
+                    name=f"{storey_name} Door {door_count}",
+                )
+                spatial.assign_container(model, products=[door], relating_structure=storey)
+
+                try:
+                    door_repr = geometry.add_door_representation(
+                        model,
+                        context=body_context,
+                        overall_height=door_height_m,
+                        overall_width=opening_width_m,
+                        door_type="SINGLE_SWING_LEFT",
+                    )
+                    geometry.assign_representation(model, product=door, representation=door_repr)
+                except Exception:
+                    # add_door_representation が失敗した場合は
+                    # 薄い壁で代替表現する
+                    door_repr = geometry.create_2pt_wall(
+                        model,
+                        element=door,
+                        context=body_context,
+                        p1=(x1_m, y1_m),
+                        p2=(x2_m, y2_m),
+                        elevation=storey_elevation_m,
+                        height=door_height_m,
+                        thickness=wall_thickness_m * 0.3,
+                        is_si=True,
+                    )
+                    geometry.assign_representation(model, product=door, representation=door_repr)
+
+                # 開口の中央に配置
+                mid_x = (x1_m + x2_m) * 0.5
+                mid_y = (y1_m + y2_m) * 0.5
+                angle = math.atan2(y2_m - y1_m, x2_m - x1_m)
+                placement = np.eye(4)
+                placement[0, 0] = math.cos(angle)
+                placement[0, 1] = -math.sin(angle)
+                placement[1, 0] = math.sin(angle)
+                placement[1, 1] = math.cos(angle)
+                placement[0, 3] = mid_x - (opening_width_m * 0.5) * math.cos(angle)
+                placement[1, 3] = mid_y - (opening_width_m * 0.5) * math.sin(angle)
+                placement[2, 3] = storey_elevation_m
+                geometry.edit_object_placement(model, product=door, matrix=placement)
+                total_walls_created += 1  # カウントに含めて validation を通す
+
+            elif segment_type == "window":
+                window_count += 1
+                opening_width_m = math.hypot(x2_m - x1_m, y2_m - y1_m)
+                window_height_m = min(wall_height_m * 0.5, 1.2)  # 標準窓高さ 1.2m
+                sill_height_m = 0.9  # 窓台高さ
+
+                window = root.create_entity(
+                    model,
+                    ifc_class="IfcWindow",
+                    name=f"{storey_name} Window {window_count}",
+                )
+                spatial.assign_container(model, products=[window], relating_structure=storey)
+
+                try:
+                    window_repr = geometry.add_window_representation(
+                        model,
+                        context=body_context,
+                        overall_height=window_height_m,
+                        overall_width=opening_width_m,
+                    )
+                    geometry.assign_representation(model, product=window, representation=window_repr)
+                except Exception:
+                    # add_window_representation が失敗した場合は薄い壁で代替
+                    window_repr = geometry.create_2pt_wall(
+                        model,
+                        element=window,
+                        context=body_context,
+                        p1=(x1_m, y1_m),
+                        p2=(x2_m, y2_m),
+                        elevation=storey_elevation_m + sill_height_m,
+                        height=window_height_m,
+                        thickness=wall_thickness_m * 0.2,
+                        is_si=True,
+                    )
+                    geometry.assign_representation(model, product=window, representation=window_repr)
+
+                mid_x = (x1_m + x2_m) * 0.5
+                mid_y = (y1_m + y2_m) * 0.5
+                angle = math.atan2(y2_m - y1_m, x2_m - x1_m)
+                placement = np.eye(4)
+                placement[0, 0] = math.cos(angle)
+                placement[0, 1] = -math.sin(angle)
+                placement[1, 0] = math.sin(angle)
+                placement[1, 1] = math.cos(angle)
+                placement[0, 3] = mid_x - (opening_width_m * 0.5) * math.cos(angle)
+                placement[1, 3] = mid_y - (opening_width_m * 0.5) * math.sin(angle)
+                placement[2, 3] = storey_elevation_m + sill_height_m
+                geometry.edit_object_placement(model, product=window, matrix=placement)
+                total_walls_created += 1  # カウントに含めて validation を通す
+
+            else:
+                # デフォルト: 壁
+                wall_count += 1
+                wall = root.create_entity(
+                    model,
+                    ifc_class="IfcWall",
+                    name=f"{storey_name} Wall {wall_count}",
+                )
+                spatial.assign_container(model, products=[wall], relating_structure=storey)
+                wall_representation = geometry.create_2pt_wall(
+                    model,
+                    element=wall,
+                    context=body_context,
+                    p1=(x1_m, y1_m),
+                    p2=(x2_m, y2_m),
+                    elevation=storey_elevation_m,
+                    height=wall_height_m,
+                    thickness=wall_thickness_m,
+                    is_si=True,
+                )
+                geometry.assign_representation(model, product=wall, representation=wall_representation)
+                total_walls_created += 1
 
     # --- 生成後 validation ---
     # geometry がゼロの IFC は viewer 側で mergeBufferGeometries クラッシュを

@@ -61,6 +61,7 @@ class SegmentPayload(BaseModel):
     y1_px: float
     x2_px: float
     y2_px: float
+    segment_type: Literal["wall", "door", "window"] = "wall"
 
 
 class PlanAnnotationsPayload(BaseModel):
@@ -97,6 +98,7 @@ class AutoDetectSegmentResponse(BaseModel):
     y1_px: float
     x2_px: float
     y2_px: float
+    segment_type: Literal["wall", "door", "window"] = "wall"
 
 
 class AutoDetectMetaImageSizeResponse(BaseModel):
@@ -282,7 +284,7 @@ def normalize_annotations_payload(job: JobRecord, payload: AnnotationsPayload) -
             "px_to_m": plan.px_to_m,
             "wall_height_m": plan.wall_height_m,
             "wall_thickness_m": plan.wall_thickness_m,
-            "segments": [segment.model_dump() for segment in plan.segments],
+            "segments": [segment.model_dump(exclude_defaults=False) for segment in plan.segments],
         }
 
     normalized = sorted(known_by_id.values(), key=lambda item: int(item["storey_index"]))
@@ -427,7 +429,16 @@ def autodetect_plan_segments(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     return AutoDetectResponse(
-        segments=[AutoDetectSegmentResponse(**segment) for segment in segments],
+        segments=[
+            AutoDetectSegmentResponse(
+                x1_px=segment["x1_px"],
+                y1_px=segment["y1_px"],
+                x2_px=segment["x2_px"],
+                y2_px=segment["y2_px"],
+                segment_type=segment.get("segment_type", "wall"),
+            )
+            for segment in segments
+        ],
         meta=AutoDetectMetaResponse(
             method=str(meta["method"]),
             image_size=AutoDetectMetaImageSizeResponse(**meta["image_size"]),

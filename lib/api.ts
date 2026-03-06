@@ -28,6 +28,7 @@ export type AutoDetectSegment = {
   y1_px: number;
   x2_px: number;
   y2_px: number;
+  segment_type?: "wall" | "door" | "window";
 };
 
 export type AutoDetectResult = {

@@ -10,6 +10,8 @@ import cv2
 import fitz
 import numpy as np
 
+from .opening_detector import detect_openings
+
 MAX_PDF_BYTES = 25 * 1024 * 1024
 MAX_RENDER_SIDE_PX = 2600
 MAX_IMAGE_PIXELS = 9_000_000
@@ -300,24 +302,49 @@ def detect_wall_segments_from_pdf(
             detected_segments = _detect_segments_from_image(image, started_at=started_at)
             image_height, image_width = image.shape[:2]
 
-            projected_segments: list[dict[str, float]] = []
+            wall_segments: list[dict[str, Any]] = []
             for x1, y1, x2, y2 in detected_segments:
-                projected_segments.append(
+                wall_segments.append(
                     {
                         "x1_px": max(0.0, min(page_width, (x1 / image_width) * page_width)),
                         "y1_px": max(0.0, min(page_height, (y1 / image_height) * page_height)),
                         "x2_px": max(0.0, min(page_width, (x2 / image_width) * page_width)),
                         "y2_px": max(0.0, min(page_height, (y2 / image_height) * page_height)),
+                        "segment_type": "wall",
                     }
                 )
 
-            return projected_segments, {
-                "filtered_count": len(projected_segments),
+            # ギャップからドア・窓を検出
+            # px_to_m が不明なので仮スケール (PDF unit → mm 相当) で推定
+            pdf_unit_to_m = (1.0 / 72.0) * 0.0254  # 1 PDF unit ≈ 0.353mm
+            openings = detect_openings(wall_segments, px_to_m=pdf_unit_to_m)
+
+            opening_segments: list[dict[str, Any]] = []
+            for opening in openings:
+                opening_segments.append(
+                    {
+                        "x1_px": opening.x1_px,
+                        "y1_px": opening.y1_px,
+                        "x2_px": opening.x2_px,
+                        "y2_px": opening.y2_px,
+                        "segment_type": opening.opening_type,
+                    }
+                )
+
+            all_segments = wall_segments + opening_segments
+
+            door_count = sum(1 for s in opening_segments if s["segment_type"] == "door")
+            window_count = sum(1 for s in opening_segments if s["segment_type"] == "window")
+
+            return all_segments, {
+                "filtered_count": len(all_segments),
                 "image_size": {
                     "height": int(image_height),
                     "width": int(image_width),
                 },
                 "method": "opencv-houghlinesp-raster-page1-beta",
+                "door_count": door_count,
+                "window_count": window_count,
             }
     except AutoDetectError:
         raise
